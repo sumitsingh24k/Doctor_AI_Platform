@@ -26,7 +26,7 @@ Frontend structure:
 To enable the Settings **Connect Google Calendar** button:
 
 1. In Google Cloud Console, enable the Google Calendar API and create a Web application OAuth client.
-2. Add `http://localhost:3000/api/google-calendar/oauth2callback` as an authorized redirect URI (use your deployed backend URL in production).
+2. Add `http://localhost:3000/api/calendar/callback` as an authorized redirect URI (use your deployed backend URL in production).
 3. Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and the exact matching `GOOGLE_REDIRECT_URI` to `Backend/.env`. Set `FRONTEND_URL` to the frontend origin (locally, `http://localhost:5173`).
 4. Restart the backend, sign in with a doctor account, save the clinic profile, then choose **Connect Google Calendar** in Settings and approve calendar access.
 

@@ -29,6 +29,7 @@ app.use("/api/doctor", doctorRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/assistant/twilio", twilioVoiceRoutes);
 app.use("/api/google-calendar", googleCalendarRoutes);
+app.use("/api/calendar", googleCalendarRoutes);
 app.use(appointmentRoutes);
 
 await connectDB();

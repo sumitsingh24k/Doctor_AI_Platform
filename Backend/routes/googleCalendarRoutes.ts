@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import {
   createDoctorGoogleAuthUrl,
   findConnectedDoctor,
@@ -59,7 +59,7 @@ googleCalendarRoutes.get("/doctors/:doctorId/events", requireAuth, requireRole("
   }
 });
 
-googleCalendarRoutes.get("/oauth2callback", async (req, res) => {
+const googleOAuthCallback = async (req: Request, res: Response) => {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   const redirectToFrontend = (status: "connected" | "error" | "cancelled") => {
     const target = new URL("/", frontendUrl);
@@ -88,6 +88,9 @@ googleCalendarRoutes.get("/oauth2callback", async (req, res) => {
     console.error("Unable to complete Google Calendar connection:", error);
     return redirectToFrontend("error");
   }
-});
+};
+
+googleCalendarRoutes.get("/oauth2callback", googleOAuthCallback);
+googleCalendarRoutes.get("/callback", googleOAuthCallback);
 
 export default googleCalendarRoutes;

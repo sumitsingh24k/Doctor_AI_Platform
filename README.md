@@ -32,7 +32,7 @@ Edit `Backend\.env` and set the required private values:
 
 - `MONGO_URI` — MongoDB connection string.
 - `AUTH_TOKEN_SECRET` and `AGENT_TOKEN_SECRET` — use long, unique random secrets.
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` — needed for Google Calendar. Register the exact redirect URI in Google Cloud Console.
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` — needed for Google Calendar. Register `http://localhost:3000/api/calendar/callback` as the local authorized redirect URI in Google Cloud Console.
 - `FRONTEND_URL` — local frontend origin, normally `http://localhost:5173`.
 
 For optional features, configure `GEMINI_API_KEY` for clinic knowledge-base AI, `SARVAM_API_KEY` for voice transcription/replies, and the `TWILIO_*` values for phone-based assistant calls. Do not commit `.env` or paste credentials into source files.
