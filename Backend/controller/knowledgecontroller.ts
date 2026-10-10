@@ -384,9 +384,10 @@ export const ingestDoctorKnowledge = async (req: Request, res: Response) => {
       return res.status(500).json({
         message: "Unable to index doctor PDF",
         stage: error.stage,
-        ...(error.stage === "file_storage"
-          ? { detail: getSafeIndexingErrorDetail(error.originalError) }
-          : {}),
+        // The client needs the failed stage to tell a Cloudinary setup problem
+        // apart from PDF parsing, Gemini embedding, or MongoDB errors. Provider
+        // messages are redacted before leaving the server.
+        detail: getSafeIndexingErrorDetail(error.originalError),
       });
     }
 

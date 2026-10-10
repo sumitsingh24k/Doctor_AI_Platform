@@ -1,5 +1,12 @@
 export type AccountRole = "patient" | "doctor" | "admin";
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly data: unknown) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export type User = {
   id: string;
   name: string;
@@ -71,7 +78,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       typeof data === "object" && data !== null && "message" in data
         ? String(data.message)
         : `Request failed (${response.status})`;
-    throw new Error(message);
+    throw new ApiError(message, data);
   }
   return data as T;
 }

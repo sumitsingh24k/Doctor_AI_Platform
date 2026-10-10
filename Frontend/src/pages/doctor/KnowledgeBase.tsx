@@ -1,8 +1,25 @@
 import { useState } from "react";
 import { BookOpen, FileText } from "lucide-react";
-import { api } from "../../api";
+import { ApiError, api } from "../../api";
 
 type UploadedFile = { name: string; size: number; status: string };
+type KnowledgeUploadResult = {
+  message?: string;
+  stage?: string;
+  detail?: string;
+};
+
+const indexingStageLabel = (stage?: string) => {
+  const labels: Record<string, string> = {
+    doctor_profile: "doctor profile",
+    pdf_extraction: "PDF text extraction",
+    chunking: "document chunking",
+    embeddings: "Gemini embeddings",
+    file_storage: "Cloudinary storage",
+    database: "database storage",
+  };
+  return stage ? labels[stage] ?? stage : "indexing";
+};
 
 export function KnowledgeBase() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
@@ -22,13 +39,24 @@ export function KnowledgeBase() {
         }
         const data = new FormData();
         data.append("file", file);
-        const result = await api<{ message?: string }>("/api/doctor/knowledge", { method: "POST", body: data });
+        const result = await api<KnowledgeUploadResult>("/api/doctor/knowledge", { method: "POST", body: data });
         uploaded.push({ name: file.name, size: file.size, status: result.message || "Uploaded" });
       }
       setFiles((current) => [...uploaded, ...current]);
       if (uploaded.length) setMessage("Your clinic documents were added to the knowledge base.");
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : "Document upload failed.");
+      if (reason instanceof ApiError && typeof reason.data === "object" && reason.data !== null) {
+        const error = reason.data as KnowledgeUploadResult;
+        if (error.stage || error.detail) {
+          setMessage(`Could not complete ${indexingStageLabel(error.stage)}: ${error.detail ?? error.message ?? "Unknown error"}`);
+        } else {
+          setMessage(error.message ?? "Document upload failed.");
+        }
+      } else if (reason instanceof Error) {
+        setMessage(reason.message);
+      } else {
+        setMessage("Document upload failed.");
+      }
     } finally {
       setBusy(false);
     }
