@@ -8,14 +8,16 @@ import { randomUUID } from "node:crypto";
 import { getAgentContext } from "../lib/requestContext.js";
 import { formatSpokenResponse, formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
 import { Doctor } from "../modal/doctordetails.js";
-import { doctorAssistantTools, mutationToolNames } from "./tools.js";
+import { doctorAssistantTools, getDoctorClinicDetailsTool, mutationToolNames } from "./tools.js";
 
 type PendingMutation = {
   name: string;
   args: Record<string, unknown>;
 };
 
-const MAX_CONTEXT_MESSAGES = 10;
+// A short, relevant recent context keeps each model request fast while the
+// checkpointer still retains the complete thread for booking state.
+const MAX_CONTEXT_MESSAGES = 6;
 
 const CLINIC_SYSTEM_PROMPT = `You are the voice assistant for one doctor's clinic.
 
@@ -49,7 +51,7 @@ Language:
 - For English, use clear Indian English.
 
 Tools and truthfulness:
-- For questions about the doctor, specialty, qualifications, clinic name, address, opening hours, or appointment duration, call get_doctor_clinic_details.
+- The verified clinic profile is included in every turn. Answer doctor, specialty, address, hours, and appointment-duration questions directly from it; do not call a tool for those facts.
 - Use clinic knowledge search for detailed services, fees, policies, and information in approved clinic documents.
 - Use appointment tools for availability, booking, rescheduling, and cancellation.
 - When the patient asks generally about availability, offer the returned open slots across the next seven days. Never offer a slot that the availability tool did not return.
@@ -78,6 +80,11 @@ const DoctorAssistantState = Annotation.Root({
   }),
 });
 
+// Clinic facts are queried once above and placed in the system context. Keeping
+// that redundant tool out of the model schema avoids an extra model/tool/model
+// round trip for the most common questions (hours, address, specialty).
+const fastAssistantTools = doctorAssistantTools.filter((tool) => tool !== getDoctorClinicDetailsTool);
+
 let geminiModel: ReturnType<ChatGoogleGenerativeAI["bindTools"]> | undefined;
 const getGeminiModel = () => {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -88,9 +95,9 @@ const getGeminiModel = () => {
     apiKey,
     model: process.env.GEMINI_CHAT_MODEL ?? "gemini-3.8-flash",
     temperature: 0,
-    maxOutputTokens: 250,
+    maxOutputTokens: 160,
     maxRetries: 0,
-  }).bindTools(doctorAssistantTools);
+  }).bindTools(fastAssistantTools);
   return geminiModel;
 };
 
@@ -100,8 +107,8 @@ const groqModel = process.env.GROQ_API_KEY
       apiKey: process.env.GROQ_API_KEY.trim(),
       model: process.env.GROQ_CHAT_MODEL ?? "openai/gpt-oss-20b",
       temperature: 0,
-      maxTokens: 250,
-    }).bindTools(doctorAssistantTools)
+    maxTokens: 160,
+  }).bindTools(fastAssistantTools)
   : undefined;
 
 const xaiModel = process.env.XAI_API_KEY?.trim()
@@ -109,9 +116,9 @@ const xaiModel = process.env.XAI_API_KEY?.trim()
       apiKey: process.env.XAI_API_KEY.trim(),
       model: process.env.XAI_CHAT_MODEL ?? "grok-4.7",
       temperature: 0,
-      maxTokens: 250,
+    maxTokens: 160,
       configuration: { baseURL: "https://api.x.ai/v1" },
-    }).bindTools(doctorAssistantTools)
+  }).bindTools(fastAssistantTools)
   : undefined;
 
 const getStatusCode = (error: unknown): number | undefined => {
@@ -248,8 +255,17 @@ const getMessageText = (message: BaseMessage | undefined) => {
   return message.content.trim().toLowerCase();
 };
 
-const isExplicitConfirmation = (message: BaseMessage | undefined) =>
-  message instanceof HumanMessage && /^(yes|yes,? confirm|confirm|haan|ha|ji haan)$/i.test(getMessageText(message));
+// Speech-to-text naturally adds terminal punctuation (for example
+// "Yes, confirm."). Normalize it before checking confirmation so an approved
+// booking is not left pending just because the transcript has a full stop.
+const isExplicitConfirmation = (message: BaseMessage | undefined) => {
+  if (!(message instanceof HumanMessage)) return false;
+  const normalized = getMessageText(message)
+    .replace(/[.!?।]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(yes|yes,? confirm|confirm|haan|ha|ji haan)$/i.test(normalized);
+};
 
 const getMissingMutationFields = (name: string, args: unknown) => {
   if (typeof args !== "object" || args === null) return ["action details"];

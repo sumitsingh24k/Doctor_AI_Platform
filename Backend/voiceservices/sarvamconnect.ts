@@ -45,16 +45,26 @@ const getSarvamClient = () => {
 
 const getProviderStatusCode = (error: unknown) => {
   if (typeof error !== "object" || error === null) return undefined;
-  const value = error as { statusCode?: unknown; status?: unknown };
+  const value = error as { statusCode?: unknown; status?: unknown; rawResponse?: { status?: unknown } };
   return typeof value.statusCode === "number"
     ? value.statusCode
     : typeof value.status === "number"
       ? value.status
-      : undefined;
+      : typeof value.rawResponse?.status === "number"
+        ? value.rawResponse.status
+        : undefined;
 };
 
 const isAbortError = (error: unknown) =>
   error instanceof Error && (error.name === "AbortError" || error.name === "CanceledError");
+
+// Sarvam's SDK turns an aborted fetch into SarvamAIError (HTTP 499), rather
+// than preserving the native AbortError. Treat that response as cancellation
+// so a user speaking over a reply (barge-in) is not logged as a TTS failure.
+const isSarvamCancellation = (error: unknown) =>
+  getProviderStatusCode(error) === 499 &&
+  error instanceof Error &&
+  /aborted|cancelled|canceled|client closed request/i.test(error.message);
 
 // The uploaded buffer is passed straight to Sarvam. Nothing is persisted on disk.
 export const transcribeAudio = async (
@@ -123,6 +133,9 @@ export const transcribeAudio = async (
     if (providerStatus === 499) {
       throw new VoiceTranscriptionError("The speech service ended the transcription request. Please try again.", 502);
     }
+    if (providerStatus === 0 || error instanceof Error && /fetch failed/i.test(error.message)) {
+      throw new VoiceTranscriptionError("The speech service could not be reached. Check this server's internet or firewall connection to api.sarvam.ai.", 503);
+    }
     throw new VoiceTranscriptionError("Unable to transcribe the audio", 502);
   }
 };
@@ -162,13 +175,19 @@ export const synthesizeSpeech = async (
     };
   } catch (error) {
     if (error instanceof VoiceSynthesisError) throw error;
-    console.error("Sarvam speech synthesis failed:", error);
     const providerStatus = getProviderStatusCode(error);
+    if (signal?.aborted || isAbortError(error) || isSarvamCancellation(error)) {
+      throw new DOMException("Speech synthesis was cancelled", "AbortError");
+    }
+    console.error("Sarvam speech synthesis failed:", error);
     if (providerStatus === 403) {
       throw new VoiceSynthesisError("Text-to-speech authentication failed", 503);
     }
     if (providerStatus === 429) {
       throw new VoiceSynthesisError("Text-to-speech is temporarily busy. Please try again.", 429);
+    }
+    if (providerStatus === 0 || error instanceof Error && /fetch failed/i.test(error.message)) {
+      throw new VoiceSynthesisError("The speech service could not be reached. Check this server's internet or firewall connection to api.sarvam.ai.", 503);
     }
     throw new VoiceSynthesisError("Unable to create speech audio", 502);
   }

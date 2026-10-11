@@ -253,6 +253,8 @@ export const installVoiceWebSocketServer = (server: Server) => {
               turnId,
               message: statusCode === 429
                 ? "The speech service is busy. Please try again in a moment."
+                : statusCode === 503
+                  ? "The speech service is unreachable. Check the backend server's internet connection and firewall access to api.sarvam.ai."
                 : statusCode === 415
                   ? "The microphone audio format was not accepted. Please restart voice mode."
                   : "I couldn't complete that voice turn. Please try again.",

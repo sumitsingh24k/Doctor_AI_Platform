@@ -5,6 +5,7 @@ import type { ChatMessage } from "../types/app";
 export type VoiceState = "idle" | "listening" | "processing" | "speaking" | "interrupted" | "error";
 const SILENCE_TO_COMMIT_MS = 1_700;
 const SILENCE_PROMPT_DELAY_MS = 10_000;
+const VAD_CALIBRATION_MS = 650;
 // Sarvam's synchronous STT endpoint is intended for short interactive turns;
 // keep uploads below its request timeout to avoid upstream 499s.
 const MAX_TURN_MS = 28_000;
@@ -44,6 +45,7 @@ export function useAssistant(setError: (message: string) => void) {
   const audioContext = useRef<AudioContext | null>(null);
   const audioSource = useRef<AudioBufferSourceNode | null>(null);
   const audioProcessor = useRef<ScriptProcessorNode | null>(null);
+  const latestAssistantReply = useRef("");
   const endRef = useRef<HTMLDivElement>(null);
   const voiceStateRef = useRef<VoiceState>("idle");
   const voiceActiveRef = useRef(false);
@@ -128,6 +130,7 @@ export function useAssistant(setError: (message: string) => void) {
     try { audioSource.current?.stop(); } catch { /* Playback may already have ended. */ }
     audioSource.current?.disconnect();
     audioSource.current = null;
+    window.speechSynthesis?.cancel();
     const socket = voiceSocket.current;
     voiceSocket.current = null;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "reset" }));
@@ -217,7 +220,12 @@ export function useAssistant(setError: (message: string) => void) {
       audioProcessor.current = processor;
       source.connect(processor);
       processor.connect(context!.destination);
+      // Calibrate against the room/microphone before treating energy as
+      // speech. Without this, a noisy microphone can start a turn
+      // immediately and then never reach the silence threshold, so no audio
+      // is ever committed to the backend for transcription.
       let noiseFloor = 0.0025;
+      const vadReadyAt = Date.now() + VAD_CALIBRATION_MS;
       let speechStartFrames = 0;
       let sessionThreadId = conversationThreadId;
 
@@ -281,16 +289,20 @@ export function useAssistant(setError: (message: string) => void) {
         // Adaptive energy VAD with a lower start threshold for quiet speech
         // and hysteresis once an utterance has started. Browser capture also
         // requests hardware echo cancellation and noise suppression above.
-        const startThreshold = Math.max(0.0045, noiseFloor * 1.85);
-        const continueThreshold = Math.max(0.0032, noiseFloor * 1.3);
+        const startThreshold = Math.max(0.012, noiseFloor * 2.8);
+        const continueThreshold = Math.max(0.007, noiseFloor * 1.7);
         if (active) utteranceFrames.current.push(frame);
         else {
           preRoll.current.push(frame);
           while (preRoll.current.reduce((total, chunk) => total + chunk.length, 0) > sampleRate.current * 0.8) preRoll.current.shift();
-          if (voiceStateRef.current !== "speaking" && rms < Math.max(0.025, noiseFloor * 2.5)) {
-            noiseFloor = noiseFloor * 0.985 + rms * 0.015;
+          if (voiceStateRef.current !== "speaking" && rms < Math.max(0.04, noiseFloor * 3.5)) {
+            // A faster update during the brief initial calibration makes this
+            // work consistently across laptop and phone microphones.
+            const weight = Date.now() < vadReadyAt ? 0.18 : 0.03;
+            noiseFloor = noiseFloor * (1 - weight) + rms * weight;
           }
         }
+        if (!active && Date.now() < vadReadyAt) return;
         const speechLike = rms > (active ? continueThreshold : startThreshold);
         if (speechLike) {
           consecutiveSpeechFrames.current += 1;
@@ -298,7 +310,7 @@ export function useAssistant(setError: (message: string) => void) {
             lastSpeechAt.current = Date.now();
           } else {
             speechStartFrames += 1;
-            if (speechStartFrames >= 3) beginUtterance();
+            if (speechStartFrames >= 5) beginUtterance();
           }
         } else {
           consecutiveSpeechFrames.current = 0;
@@ -351,7 +363,10 @@ export function useAssistant(setError: (message: string) => void) {
             setMessages((current) => [...current, { role: "user", text: payload.transcript!, transcript: true }]);
           } else if (payload.type === "assistant_reply") {
             if (payload.threadId) { sessionThreadId = payload.threadId; setThreadId(payload.threadId); }
-            if (payload.reply) setMessages((current) => [...current, { role: "assistant", text: payload.reply! }]);
+            if (payload.reply) {
+              latestAssistantReply.current = payload.reply;
+              setMessages((current) => [...current, { role: "assistant", text: payload.reply! }]);
+            }
           } else if ((payload.type === "assistant_audio" || payload.type === "assistant_prompt") && payload.audioBase64 && payload.audioContentType) {
             const currentTurn = payload.turnId ?? turnId.current;
             if (payload.type === "assistant_prompt" && payload.text) {
@@ -387,8 +402,27 @@ export function useAssistant(setError: (message: string) => void) {
               }
             })();
           } else if (payload.type === "assistant_audio_error") {
-            setError(payload.message || "Your reply is ready, but voice playback could not be generated.");
-            setVoice("listening");
+            // Sarvam TTS can be unavailable (for example due to a corporate
+            // firewall). Keep the voice conversation usable with the device's
+            // local speech engine rather than leaving the reply silent.
+            const fallbackText = latestAssistantReply.current;
+            if (fallbackText && "speechSynthesis" in window) {
+              window.speechSynthesis.cancel();
+              const utterance = new SpeechSynthesisUtterance(fallbackText);
+              utterance.lang = /[\u0900-\u097F]/.test(fallbackText) ? "hi-IN" : "en-IN";
+              utterance.rate = 0.95;
+              utterance.onend = () => {
+                if (generation === captureGeneration.current && voiceActiveRef.current) setVoice("listening");
+              };
+              utterance.onerror = () => {
+                if (generation === captureGeneration.current && voiceActiveRef.current) setVoice("listening");
+              };
+              setVoice("speaking");
+              window.speechSynthesis.speak(utterance);
+            } else {
+              setError(payload.message || "Your reply is ready, but voice playback could not be generated.");
+              setVoice("listening");
+            }
           } else if (payload.type === "no_speech") {
             setVoice("listening");
             scheduleSilencePrompt(payload.turnId ?? turnId.current);
