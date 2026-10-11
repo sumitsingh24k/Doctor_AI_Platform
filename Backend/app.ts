@@ -8,6 +8,7 @@ import doctorRoutes from "./routes/doctorRoutes.js";
 import googleCalendarRoutes from "./routes/googleCalendarRoutes.js";
 import twilioVoiceRoutes from "./routes/twilioVoiceRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
+import adminAssistantRoutes from "./routes/adminAssistantRoutes.js";
 import { installVoiceWebSocketServer } from "./lib/socket.js";
 
 const app = express();
@@ -25,6 +26,7 @@ if (!process.env.SARVAM_API_KEY?.trim()) {
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminAssistantRoutes);
 app.use("/api/doctor", doctorRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/assistant/twilio", twilioVoiceRoutes);

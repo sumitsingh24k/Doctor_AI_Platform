@@ -3,8 +3,8 @@ import {
 } from "lucide-react";
 
 export function AuthScreen({ role, setRole, registering, setRegistering, onSubmit, error, onContinueAsGuest }: {
-  role: "patient" | "doctor";
-  setRole: (role: "patient" | "doctor") => void;
+  role: "patient" | "doctor" | "admin";
+  setRole: (role: "patient" | "doctor" | "admin") => void;
   registering: boolean;
   setRegistering: (value: boolean) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
@@ -20,8 +20,8 @@ export function AuthScreen({ role, setRole, registering, setRegistering, onSubmi
       </div><div className="auth-foot">A little more human. A lot more helpful.<span>© 2026 Medimind</span></div>
     </section>
     <section className="auth-form-side"><div className="auth-form-wrap">
-      <div className="form-topline"><span>{registering ? "GET STARTED" : "WELCOME BACK"}</span><div className="role-switch"><button className={role === "patient" ? "selected" : ""} onClick={() => setRole("patient")}>Patient</button><button className={role === "doctor" ? "selected" : ""} onClick={() => setRole("doctor")}>Doctor</button></div></div>
-      <h2>{registering ? "Create your account" : role === "patient" ? "Welcome back" : "Welcome back, doctor"}</h2><p className="form-subtitle">{registering ? "A better care experience starts here." : role === "patient" ? "Sign in to find care that feels right." : "Sign in to your practice dashboard."}</p>
+      <div className="form-topline"><span>{registering ? "GET STARTED" : "WELCOME BACK"}</span><div className="role-switch"><button className={role === "patient" ? "selected" : ""} onClick={() => setRole("patient")}>Patient</button><button className={role === "doctor" ? "selected" : ""} onClick={() => setRole("doctor")}>Doctor</button><button className={role === "admin" ? "selected" : ""} onClick={() => { setRole("admin"); setRegistering(false); }}>Admin</button></div></div>
+      <h2>{registering ? "Create your account" : role === "patient" ? "Welcome back" : role === "doctor" ? "Welcome back, doctor" : "Admin sign in"}</h2><p className="form-subtitle">{registering ? "A better care experience starts here." : role === "patient" ? "Sign in to find care that feels right." : role === "doctor" ? "Sign in to your practice dashboard." : "Review assistant quality checks and conversation audits."}</p>
       <form className="auth-form" onSubmit={onSubmit}>
         {registering && <label>Full name<input name="name" autoComplete="name" placeholder="Your name" minLength={2} required /></label>}
         <label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@example.com" required /></label>
@@ -30,7 +30,7 @@ export function AuthScreen({ role, setRole, registering, setRegistering, onSubmi
         {error && <div className="auth-error">{error}</div>}
         <button className="button button-primary auth-submit" type="submit">{registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></button>
       </form>
-      <div className="auth-toggle">{registering ? "Already have an account?" : "New to Medimind?"}<button onClick={() => setRegistering(!registering)}>{registering ? "Sign in" : "Create an account"}</button></div>
+      {role !== "admin" && <div className="auth-toggle">{registering ? "Already have an account?" : "New to Medimind?"}<button onClick={() => setRegistering(!registering)}>{registering ? "Sign in" : "Create an account"}</button></div>}
       {role === "patient" && <><button className="button button-outline auth-submit guest-entry-button" type="button" onClick={onContinueAsGuest}>Continue without an account</button><div className="auth-assistant-hint"><Sparkles size={17} /><span><b>Explore care as a guest</b><small>Browse clinics, chat with the assistant, and book with your contact details.</small></span></div></>}
       {role === "doctor" && <div className="auth-assistant-hint"><ShieldCheck size={17} /><span><b>Your practice, in one place</b><small>Manage appointments, patients, and your clinic profile.</small></span></div>}
       <div className="auth-legal">By continuing, you agree to our <a href="#terms">Terms</a> and <a href="#privacy">Privacy Policy</a>.</div>

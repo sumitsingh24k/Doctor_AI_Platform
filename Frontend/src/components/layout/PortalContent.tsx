@@ -11,6 +11,7 @@ import { KnowledgeBase } from "../../pages/doctor/KnowledgeBase";
 import { AssistantPage } from "../../pages/patient/AssistantPage";
 import { PatientAppointments } from "../../pages/patient/PatientAppointments";
 import { PatientHome } from "../../pages/patient/PatientHome";
+import { AssistantEvaluationDashboard } from "../../pages/admin/AssistantEvaluationDashboard";
 import type { User } from "../../api";
 import type { Section } from "../../types/app";
 
@@ -24,6 +25,7 @@ export function PortalContent({ user, section, setSection, care, assistant, doct
   doctorSetup: boolean;
   onSetupComplete: () => Promise<boolean>;
 }) {
+  if (user.role === "admin") return <AssistantEvaluationDashboard />;
   if (user.role === "patient") {
     if (section === "doctors") {
       return <DoctorDirectory

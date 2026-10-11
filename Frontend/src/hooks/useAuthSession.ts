@@ -4,7 +4,7 @@ import { api, signIn, signUp, type User } from "../api";
 export function useAuthSession() {
   const [user, setUser] = useState<User | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
-  const [authRole, setAuthRole] = useState<"patient" | "doctor">("patient");
+  const [authRole, setAuthRole] = useState<"patient" | "doctor" | "admin">("patient");
   const [registering, setRegistering] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -44,9 +44,13 @@ export function useAuthSession() {
     const password = String(form.get("password") ?? "");
     const name = String(form.get("name") ?? "").trim();
     try {
-      const nextUser = registering
-        ? await signUp(name, email, password, authRole)
-        : await signIn(email, password);
+      let nextUser: User;
+      if (registering) {
+        if (authRole === "admin") throw new Error("Admin accounts cannot be created from the public registration form.");
+        nextUser = await signUp(name, email, password, authRole);
+      } else {
+        nextUser = await signIn(email, password);
+      }
       if (nextUser.role !== authRole && !registering) {
         await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
         localStorage.removeItem("medimind.accessToken");

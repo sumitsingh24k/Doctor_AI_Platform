@@ -8,7 +8,8 @@ export type Section =
   | "calendar"
   | "patients"
   | "knowledge"
-  | "settings";
+  | "settings"
+  | "evaluations";
 
 export type ChatMessage = {
   role: "assistant" | "user";

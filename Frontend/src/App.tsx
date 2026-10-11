@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, AudioLines, BookOpen, CalendarDays, CheckCircle2, LayoutDashboard, Settings, Sparkles, Stethoscope, Users, X } from "lucide-react";
+import { Activity, AudioLines, BookOpen, CalendarDays, CheckCircle2, LayoutDashboard, Settings, ShieldCheck, Sparkles, Stethoscope, Users, X } from "lucide-react";
 import { AuthScreen } from "./components/auth/AuthScreen";
 import { BookingModal } from "./components/booking/BookingModal";
 import { AppShell, type NavigationItem } from "./components/layout/AppShell";
@@ -25,6 +25,9 @@ const doctorNavigation: NavigationItem[] = [
   { id: "patients", label: "Patients", icon: Users },
   { id: "knowledge", label: "Knowledge Base", icon: BookOpen },
   { id: "settings", label: "Settings", icon: Settings },
+];
+const adminNavigation: NavigationItem[] = [
+  { id: "evaluations", label: "AI quality control", icon: ShieldCheck },
 ];
 
 function App() {
@@ -79,7 +82,7 @@ function App() {
       setSection(complete ? "home" : "settings");
       return;
     }
-    setSection("home");
+    setSection(auth.user.role === "admin" ? "evaluations" : "home");
   }, [auth.user, doctorProfile.profile._id, doctorProfile.profile.calendarConnected, doctorProfile.profile.setupComplete]);
 
   if (auth.loadingSession) {
@@ -100,9 +103,10 @@ function App() {
   const user = activeUser;
   const isGuest = !auth.user;
   const isPatient = user.role === "patient";
+  const isAdmin = user.role === "admin";
   const doctorSetupComplete = Boolean(user.role === "doctor" && user.doctorId && doctorProfile.profile._id === user.doctorId && doctorProfile.profile.calendarConnected === "true" && doctorProfile.profile.setupComplete === "true");
   const doctorSetup = user.role === "doctor" && !isGuest && !doctorSetupComplete;
-  const navigation = isPatient ? patientNavigation : doctorSetup
+  const navigation = isAdmin ? adminNavigation : isPatient ? patientNavigation : doctorSetup
     ? [{ id: "settings" as const, label: "Clinic setup", icon: Settings }]
     : doctorNavigation;
   const navigate = (next: Section) => {

@@ -8,6 +8,7 @@ import { verifyAccessToken } from "../lib/auth.js";
 import { formatSpokenResponse } from "../lib/spokenFormatting.js";
 import User from "../modal/userschema.js";
 import { Doctor } from "../modal/doctordetails.js";
+import { AssistantAuditLog } from "../modal/assistantAuditLog.js";
 import { doctorAssistant } from "../agent/doctorAssistantAgent.js";
 import {
   transcribeAudio,
@@ -84,6 +85,20 @@ const formatError = (error: unknown) => {
   return { value: error, status: getErrorStatus(error) };
 };
 
+// Analytics must never delay or fail a patient-facing assistant reply.
+const recordAssistantConversation = (input: {
+  threadId: string;
+  doctorId?: string;
+  channel: "text" | "voice";
+  userMessage: string;
+  assistantReply: string;
+  latencyMs?: number;
+}) => {
+  void AssistantAuditLog.create(input).catch((error: unknown) => {
+    console.warn("assistant.audit_log.failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
+  });
+};
+
 export const invokeAssistant = async (
   message: string,
   threadId: string,
@@ -158,6 +173,7 @@ type VoiceTurnInput = {
 };
 
 export const processVoiceTurn = async ({ audio, mimeType, languageCode, threadId, agentContext, signal, onProgress }: VoiceTurnInput) => {
+  const startedAt = Date.now();
   const throwIfCancelled = () => {
     if (signal?.aborted) throw new DOMException("The voice turn was interrupted", "AbortError");
   };
@@ -183,6 +199,14 @@ export const processVoiceTurn = async ({ audio, mimeType, languageCode, threadId
     ...(agentContext ? { agentContext } : {}),
     ...(detectedLanguage !== "unknown" ? { voiceLanguage: detectedLanguage } : {}),
     ...(signal ? { signal } : {}),
+  });
+  recordAssistantConversation({
+    threadId: safeThreadId,
+    ...(agentContext?.doctorId ? { doctorId: agentContext.doctorId } : {}),
+    channel: "voice",
+    userMessage: transcription.transcript,
+    assistantReply: reply,
+    latencyMs: Date.now() - startedAt,
   });
   throwIfCancelled();
   onProgress?.({ type: "assistant_reply", threadId: safeThreadId, reply });
@@ -223,6 +247,7 @@ export const chatWithDoctorAssistant = async (req: Request, res: Response) => {
     return res.status(statusCode).json({ message: error instanceof Error ? error.message : "Invalid or expired authentication token" });
   }
   const threadId = agentContext?.threadId ?? getThreadId(req);
+  const startedAt = Date.now();
 
   if (!message) {
     return res.status(400).json({ message: "A chat message is required" });
@@ -234,6 +259,14 @@ export const chatWithDoctorAssistant = async (req: Request, res: Response) => {
       threadId,
       agentContext ? { agentContext } : undefined
     );
+    recordAssistantConversation({
+      threadId,
+      ...(agentContext?.doctorId ? { doctorId: agentContext.doctorId } : {}),
+      channel: "text",
+      userMessage: message,
+      assistantReply: reply,
+      latencyMs: Date.now() - startedAt,
+    });
     setThreadCookie(res, threadId);
     return res.status(200).json({
       threadId,

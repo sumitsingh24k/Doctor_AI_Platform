@@ -11,6 +11,27 @@ import { normalizeAppointmentDate } from "../lib/appointmentDate.js";
 import { getAgentContext } from "../lib/requestContext.js";
 import { formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
 import { Doctor } from "../modal/doctordetails.js";
+import { AssistantActionAudit } from "../modal/assistantActionAudit.js";
+
+const recordAssistantAction = (input: {
+  action: "book" | "reschedule" | "cancel";
+  outcome: "succeeded" | "failed";
+  appointmentId?: string;
+  error?: unknown;
+}) => {
+  const context = getAgentContext();
+  if (!context) return;
+  const error = input.error as { statusCode?: unknown } | undefined;
+  void AssistantActionAudit.create({
+    threadId: context.threadId,
+    doctorId: context.doctorId,
+    action: input.action,
+    outcome: input.outcome,
+    ...(input.appointmentId ? { appointmentId: input.appointmentId } : {}),
+    ...(typeof error?.statusCode === "number" ? { errorCode: error.statusCode } : {}),
+    ...(input.error instanceof Error ? { errorMessage: input.error.message.slice(0, 500) } : {}),
+  }).catch((auditError: unknown) => console.warn("assistant.action_audit.failed", { errorName: auditError instanceof Error ? auditError.name : "UnknownError" }));
+};
 
 export const getDoctorClinicDetailsTool = tool(
   async () => {
@@ -94,14 +115,20 @@ export const getAvailableSlotsTool = tool(
 
 export const bookAppointmentTool = tool(
   async (input) => {
-    const appointment = await bookAppointment(input);
-    return JSON.stringify({
-      message: "Appointment booked successfully",
-      appointmentId: appointment._id.toString(),
-      appointmentDate: appointment.appointmentDate,
-      appointmentTime: appointment.appointmentTime,
-      status: appointment.status,
-    });
+    try {
+      const appointment = await bookAppointment(input);
+      recordAssistantAction({ action: "book", outcome: "succeeded", appointmentId: appointment._id.toString() });
+      return JSON.stringify({
+        message: "Appointment booked successfully",
+        appointmentId: appointment._id.toString(),
+        appointmentDate: appointment.appointmentDate,
+        appointmentTime: appointment.appointmentTime,
+        status: appointment.status,
+      });
+    } catch (error) {
+      recordAssistantAction({ action: "book", outcome: "failed", error });
+      throw error;
+    }
   },
   {
     name: "book_appointment",
@@ -120,7 +147,9 @@ export const bookAppointmentTool = tool(
 
 export const rescheduleAppointmentTool = tool(
   async (input) => {
-    const appointment = await rescheduleAppointment(input);
+    try {
+      const appointment = await rescheduleAppointment(input);
+      recordAssistantAction({ action: "reschedule", outcome: "succeeded", appointmentId: appointment._id.toString() });
     return JSON.stringify({
       message: "Appointment rescheduled successfully",
       appointmentId: appointment._id.toString(),
@@ -128,6 +157,10 @@ export const rescheduleAppointmentTool = tool(
       appointmentTime: appointment.appointmentTime,
       status: appointment.status,
     });
+    } catch (error) {
+      recordAssistantAction({ action: "reschedule", outcome: "failed", error });
+      throw error;
+    }
   },
   {
     name: "reschedule_appointment",
@@ -144,12 +177,18 @@ export const rescheduleAppointmentTool = tool(
 
 export const cancelAppointmentTool = tool(
   async (input) => {
-    const appointment = await cancelAppointment(input);
+    try {
+      const appointment = await cancelAppointment(input);
+      recordAssistantAction({ action: "cancel", outcome: "succeeded", appointmentId: appointment._id.toString() });
     return JSON.stringify({
       message: "Appointment cancelled successfully",
       appointmentId: appointment._id.toString(),
       status: appointment.status,
     });
+    } catch (error) {
+      recordAssistantAction({ action: "cancel", outcome: "failed", error });
+      throw error;
+    }
   },
   {
     name: "cancel_appointment",
