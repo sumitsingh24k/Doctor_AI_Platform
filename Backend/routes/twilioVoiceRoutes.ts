@@ -26,7 +26,7 @@ twilioVoiceRoutes.post("/integration", async (req, res) => {
 		const integration = await TwilioIntegration.findOneAndUpdate(
 			{ phoneNumber },
 			{ $set: { doctorId: doctor._id, status: "connected" } },
-			{ new: true, upsert: true, setDefaultsOnInsert: true }
+			{ returnDocument: "after", upsert: true, setDefaultsOnInsert: true }
 		);
 		return res.status(201).json({ integration });
 	} catch (error) {

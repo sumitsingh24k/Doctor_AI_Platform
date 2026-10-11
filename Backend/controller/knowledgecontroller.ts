@@ -22,6 +22,7 @@ const getEmbeddings = () => {
   embeddings ??= new GoogleGenerativeAIEmbeddings({
     apiKey: getGeminiApiKey(),
     modelName: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-001",
+    maxRetries: 0,
   });
   return embeddings;
 };
@@ -35,17 +36,19 @@ let chatModel: ChatGoogleGenerativeAI | undefined;
 const getChatModel = () => {
   chatModel ??= new ChatGoogleGenerativeAI({
     apiKey: getGeminiApiKey(),
-    model: process.env.GEMINI_CHAT_MODEL ?? "gemini-2.5-flash",
+    model: process.env.GEMINI_CHAT_MODEL ?? "gemini-3.8-flash",
     temperature: 0,
+    maxRetries: 0,
   });
   return chatModel;
 };
 
 const getDoctor = async () => {
   const context = getAgentContext();
-  const doctor = context
-    ? await Doctor.findOne({ _id: context.doctorId })
-    : await Doctor.findOne();
+  if (!context?.doctorId) {
+    throw new Error("A doctor tenant context is required");
+  }
+  const doctor = await Doctor.findById(context.doctorId);
   if (!doctor) {
     throw new Error("Doctor profile not found");
   }
@@ -107,6 +110,23 @@ const getModelText = (content: unknown) => {
   return "";
 };
 
+const getProviderStatus = (error: unknown) => {
+  if (typeof error !== "object" || error === null) return undefined;
+  const value = error as { status?: unknown; statusCode?: unknown; response?: { status?: unknown } };
+  if (typeof value.status === "number") return value.status;
+  if (typeof value.statusCode === "number") return value.statusCode;
+  return typeof value.response?.status === "number" ? value.response.status : undefined;
+};
+
+const logOptionalGeminiFailure = (operation: "rewrite" | "rerank" | "embedding", error: unknown) => {
+  console.warn("knowledge.optional_gemini_step_skipped", {
+    operation,
+    provider: "gemini",
+    status: getProviderStatus(error),
+    quotaLimited: getProviderStatus(error) === 429,
+  });
+};
+
 const rewriteQuery = async (query: string) => {
   try {
     const response = await getChatModel().invoke(
@@ -115,7 +135,7 @@ const rewriteQuery = async (query: string) => {
     const rewritten = getModelText(response.content).trim();
     return rewritten || query;
   } catch (error) {
-    console.error("Query rewriting failed:", error);
+    logOptionalGeminiFailure("rewrite", error);
     return query;
   }
 };
@@ -212,7 +232,7 @@ const rerankMatches = async (query: string, matches: RankedMatch[]) => {
       rerankScore: 1 - rank / Math.max(matches.length, 1),
     }));
   } catch (error) {
-    console.error("Result re-ranking failed:", error);
+    logOptionalGeminiFailure("rerank", error);
     return matches;
   }
 };
@@ -229,7 +249,14 @@ export const searchDoctorKnowledgeForAssistant = async ({
 }: KnowledgeSearchInput) => {
   const doctor = await getDoctor();
   const rewrittenQuery = await rewriteQuery(query);
-  const queryVector = await getEmbeddings().embedQuery(rewrittenQuery);
+  let queryVector: number[] | undefined;
+  try {
+    queryVector = await getEmbeddings().embedQuery(rewrittenQuery);
+  } catch (error) {
+    // Embeddings improve relevance, but lexical retrieval still provides a
+    // tenant-scoped result when Gemini is rate-limited or temporarily down.
+    logOptionalGeminiFailure("embedding", error);
+  }
   const context = getAgentContext();
   const metadataFilter: Record<string, unknown> = { doctorId: doctor._id };
 
@@ -242,7 +269,7 @@ export const searchDoctorKnowledgeForAssistant = async ({
   const safeTopK = Math.min(Math.max(topK || 4, 1), 8);
   const candidateMatches: RankedMatch[] = knowledge
     .map((item) => {
-      const vectorScore = cosineSimilarity(queryVector, item.embedding);
+      const vectorScore = queryVector ? cosineSimilarity(queryVector, item.embedding) : 0;
       const lexicalScore = Math.max(
         keywordScore(query, item.content),
         keywordScore(rewrittenQuery, item.content)
@@ -257,7 +284,7 @@ export const searchDoctorKnowledgeForAssistant = async ({
         tags: item.tags,
         vectorScore,
         keywordScore: lexicalScore,
-        hybridScore: vectorScore * 0.7 + lexicalScore * 0.3,
+        hybridScore: queryVector ? vectorScore * 0.7 + lexicalScore * 0.3 : lexicalScore,
       };
     })
     .sort((left, right) => right.hybridScore - left.hybridScore)

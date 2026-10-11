@@ -88,7 +88,18 @@ export const Bookappointment = async (req: Request, res: Response) => {
 
     // This application currently has one doctor, so patients do not need to
     // provide a doctor ID. The connected doctor is selected automatically.
-    const doctor = await findConnectedDoctor(typeof doctorId === "string" ? doctorId : undefined);
+    const agentDoctorId = getAgentContext()?.doctorId;
+    if (agentDoctorId && typeof doctorId === "string" && doctorId !== agentDoctorId) {
+      return res.status(403).json({ message: "You cannot book an appointment for another clinic through this assistant" });
+    }
+    const requestedDoctorId = agentDoctorId ?? (typeof doctorId === "string" ? doctorId.trim() : "");
+    if (!requestedDoctorId) {
+      return res.status(400).json({ message: "A doctorId is required to book an appointment" });
+    }
+    if (!/^[a-f\d]{24}$/i.test(requestedDoctorId)) {
+      return res.status(400).json({ message: "A valid doctorId is required" });
+    }
+    const doctor = await findConnectedDoctor(requestedDoctorId);
     const appointmentDurationMinutes = doctor.appointmentDurationMinutes || 30;
     const { start, end, timeZone } = buildAppointmentWindow(
       appointmentDate,
@@ -142,7 +153,7 @@ export const Bookappointment = async (req: Request, res: Response) => {
       });
     }
 
-    let patient = await Patient.findOne({ ...doctorFilter(), phoneNumber: normalizedPhoneNumber });
+    let patient = await Patient.findOne({ doctorId: doctor._id, phoneNumber: normalizedPhoneNumber });
 
     if (patient && patient.name.toLowerCase() !== normalizedName.toLowerCase()) {
       return res.status(409).json({
@@ -239,7 +250,14 @@ export const getAppointmentAvailability = async (req: Request, res: Response) =>
     }
 
     const doctorId = typeof req.query.doctorId === "string" ? req.query.doctorId : undefined;
-    const availability = await getAvailableAppointmentSlots(normalizedDate, doctorId);
+    const agentDoctorId = getAgentContext()?.doctorId;
+    if (agentDoctorId && doctorId && doctorId !== agentDoctorId) {
+      return res.status(403).json({ message: "You cannot check availability for another clinic through this assistant" });
+    }
+    const requestedDoctorId = agentDoctorId ?? doctorId?.trim();
+    if (!requestedDoctorId) return res.status(400).json({ message: "A doctorId is required to check appointment availability" });
+    if (!/^[a-f\d]{24}$/i.test(requestedDoctorId)) return res.status(400).json({ message: "A valid doctorId is required" });
+    const availability = await getAvailableAppointmentSlots(normalizedDate, requestedDoctorId);
     return res.status(200).json(availability);
   } catch (error) {
     console.error(error);

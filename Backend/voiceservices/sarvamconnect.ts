@@ -5,6 +5,7 @@ export const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
 type TranscriptionOptions = {
   languageCode?: SarvamAI.SpeechToTextLanguage;
   mode?: SarvamAI.Mode;
+  signal?: AbortSignal;
 };
 
 export type SpeechToTextLanguage = SarvamAI.SpeechToTextLanguage;
@@ -52,6 +53,9 @@ const getProviderStatusCode = (error: unknown) => {
       : undefined;
 };
 
+const isAbortError = (error: unknown) =>
+  error instanceof Error && (error.name === "AbortError" || error.name === "CanceledError");
+
 // The uploaded buffer is passed straight to Sarvam. Nothing is persisted on disk.
 export const transcribeAudio = async (
   file: Express.Multer.File,
@@ -64,18 +68,27 @@ export const transcribeAudio = async (
     throw new VoiceTranscriptionError("Audio files must be 15 MB or smaller", 413);
   }
 
+  // MediaRecorder includes codec parameters (for example,
+  // "audio/webm;codecs=opus"). Sarvam validates the media type without those
+  // parameters, so send only the normalized type in the upload metadata.
+  const suppliedContentType = (file.mimetype || "application/octet-stream")
+    .split(";", 1)[0]
+    ?.trim()
+    .toLowerCase() || "application/octet-stream";
+  const contentType = suppliedContentType === "audio/x-wav" ? "audio/wav" : suppliedContentType;
+
   try {
     const response = await getSarvamClient().speechToText.transcribe({
       file: {
         data: file.buffer,
-        filename: file.originalname || "voice-message.webm",
-        contentType: file.mimetype || "application/octet-stream",
+        filename: file.originalname || `voice-message.${contentType === "audio/mp4" ? "mp4" : contentType === "audio/ogg" ? "ogg" : "webm"}`,
+        contentType,
         contentLength: file.size,
       },
       model: "saaras:v4",
       mode: options.mode ?? "transcribe",
       ...(options.languageCode ? { language_code: options.languageCode } : {}),
-    });
+    }, options.signal ? { abortSignal: options.signal } : undefined);
     const transcript = response.transcript.trim();
     if (!transcript) {
       throw new VoiceTranscriptionError("No speech was detected in this audio", 422);
@@ -87,13 +100,28 @@ export const transcribeAudio = async (
     };
   } catch (error) {
     if (error instanceof VoiceTranscriptionError) throw error;
-    console.error("Sarvam transcription failed:", error);
     const providerStatus = getProviderStatusCode(error);
+    if (options.signal?.aborted || isAbortError(error)) {
+      throw new DOMException("Speech transcription was cancelled", "AbortError");
+    }
+    console.warn("voice.stt.failed", {
+      provider: "sarvam",
+      status: providerStatus,
+      requestId: typeof error === "object" && error !== null && "requestId" in error ? String((error as { requestId: unknown }).requestId) : undefined,
+      contentType,
+      bytes: file.size,
+    });
     if (providerStatus === 403) {
       throw new VoiceTranscriptionError("Speech-to-text authentication failed", 503);
     }
     if (providerStatus === 429) {
       throw new VoiceTranscriptionError("Speech-to-text is temporarily busy. Please try again.", 429);
+    }
+    if (providerStatus === 400) {
+      throw new VoiceTranscriptionError("The speech service rejected this audio format. Please try recording again.", 415);
+    }
+    if (providerStatus === 499) {
+      throw new VoiceTranscriptionError("The speech service ended the transcription request. Please try again.", 502);
     }
     throw new VoiceTranscriptionError("Unable to transcribe the audio", 502);
   }
@@ -101,7 +129,8 @@ export const transcribeAudio = async (
 
 export const synthesizeSpeech = async (
   text: string,
-  languageCode: TextToSpeechLanguage
+  languageCode: TextToSpeechLanguage,
+  signal?: AbortSignal,
 ) => {
   const normalizedText = text.trim();
   if (!normalizedText) {
@@ -120,7 +149,7 @@ export const synthesizeSpeech = async (
       output_audio_codec: "wav",
       speech_sample_rate: 24000,
       pace: 1,
-    });
+    }, signal ? { abortSignal: signal } : undefined);
     const audioBase64 = response.audios.join("");
     if (!audioBase64) {
       throw new VoiceSynthesisError("Speech service returned no audio", 502);

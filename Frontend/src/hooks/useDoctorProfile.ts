@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type User } from "../api";
+import { ApiError, api, type User } from "../api";
 
 function normalizeProfile(profile: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, String(value ?? "")]));
+  return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? "")]));
 }
 
 export function useDoctorProfile({
@@ -26,15 +26,21 @@ export function useDoctorProfile({
       setProfile(normalizeProfile(result.doctor));
     } catch (reason) {
       setProfile({});
+      if (reason instanceof ApiError && /doctor profile not found|profile is required/i.test(reason.message)) return;
       setError(reason instanceof Error ? reason.message : "Unable to load doctor profile.");
     }
   }, [setError]);
 
   useEffect(() => {
-    if (user?.role === "doctor") void loadProfile();
-  }, [user, loadProfile]);
+    if (user?.role === "doctor") {
+      setProfile({});
+      void loadProfile();
+    } else {
+      setProfile({});
+    }
+  }, [user?.id, user?.role, loadProfile]);
 
-  const saveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
+  const saveProfile = async (event: React.FormEvent<HTMLFormElement>): Promise<boolean> => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const body: Record<string, unknown> = Object.fromEntries(form.entries());
@@ -51,8 +57,10 @@ export function useDoctorProfile({
       setProfile(normalizeProfile(result.doctor));
       setUser((current) => current ? { ...current, doctorId: String(result.doctor._id) } : current);
       setNotice("Clinic profile saved.");
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not save the profile.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -74,5 +82,25 @@ export function useDoctorProfile({
     }
   };
 
-  return { profile, saving, connectingCalendar, saveProfile, connectCalendar };
+  const completeSetup = async () => {
+    setError("");
+    try {
+      await api<{ setupComplete: boolean }>("/api/doctor/setup/complete", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setProfile((current) => ({ ...current, setupComplete: "true" }));
+      setNotice("Clinic setup is complete. Your dashboard is ready.");
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to complete clinic setup.");
+      return false;
+    }
+  };
+
+  const updateAssistantProfile = useCallback((assistant: Record<string, unknown>) => {
+    setProfile((current) => ({ ...current, ...normalizeProfile(assistant) }));
+  }, []);
+
+  return { profile, saving, connectingCalendar, saveProfile, connectCalendar, completeSetup, updateAssistantProfile };
 }

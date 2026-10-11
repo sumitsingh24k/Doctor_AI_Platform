@@ -2,13 +2,14 @@ import {
   Activity, ArrowRight, HeartPulse, ShieldCheck, Sparkles,
 } from "lucide-react";
 
-export function AuthScreen({ role, setRole, registering, setRegistering, onSubmit, error }: {
+export function AuthScreen({ role, setRole, registering, setRegistering, onSubmit, error, onContinueAsGuest }: {
   role: "patient" | "doctor";
   setRole: (role: "patient" | "doctor") => void;
   registering: boolean;
   setRegistering: (value: boolean) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   error: string;
+  onContinueAsGuest: () => void;
 }) {
   return <div className="auth-layout">
     <section className="auth-story">
@@ -30,7 +31,7 @@ export function AuthScreen({ role, setRole, registering, setRegistering, onSubmi
         <button className="button button-primary auth-submit" type="submit">{registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></button>
       </form>
       <div className="auth-toggle">{registering ? "Already have an account?" : "New to Medimind?"}<button onClick={() => setRegistering(!registering)}>{registering ? "Sign in" : "Create an account"}</button></div>
-      {role === "patient" && <div className="auth-assistant-hint"><Sparkles size={17} /><span><b>Prefer to talk it through?</b><small>Your assistant can help find and book a doctor after you sign in.</small></span></div>}
+      {role === "patient" && <><button className="button button-outline auth-submit guest-entry-button" type="button" onClick={onContinueAsGuest}>Continue without an account</button><div className="auth-assistant-hint"><Sparkles size={17} /><span><b>Explore care as a guest</b><small>Browse clinics, chat with the assistant, and book with your contact details.</small></span></div></>}
       {role === "doctor" && <div className="auth-assistant-hint"><ShieldCheck size={17} /><span><b>Your practice, in one place</b><small>Manage appointments, patients, and your clinic profile.</small></span></div>}
       <div className="auth-legal">By continuing, you agree to our <a href="#terms">Terms</a> and <a href="#privacy">Privacy Policy</a>.</div>
     </div></section>

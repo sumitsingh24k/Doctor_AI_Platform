@@ -162,9 +162,17 @@ export const replyToTwilioSpeech = async (req: Request, res: Response) => {
       ? ENGLISH_LANGUAGE
       : detectSpeechLanguage(speech, requestedLanguage);
   if (digits === "1" || digits === "2") {
+    let doctorName = "your doctor";
+    try {
+      const context = await getTwilioAgentContext(req, callSid || "unknown");
+      const doctor = await Doctor.findById(context.doctorId).select("name").lean();
+      if (doctor?.name) doctorName = doctor.name;
+    } catch {
+      // The next turn will report a disconnected clinic if its number is no longer mapped.
+    }
     const prompt = language === HINDI_LANGUAGE
-      ? "नमस्ते। मैं डॉक्टर Ravikant ka Ai असिस्टेंट हूँ। आप क्या पूछना चाहते हैं?"
-      : "Hello. I am the doctor assistant. How can I help you?";
+      ? `नमस्ते। मैं ${doctorName} के क्लिनिक का AI सहायक हूँ। आप क्या पूछना चाहेंगे?`
+      : `Hello. I am the assistant for Dr. ${doctorName}'s clinic. How can I help you?`;
     return sendTwiml(res, gatherSpeech(prompt, language));
   }
   if (!speech || !callSid) {
