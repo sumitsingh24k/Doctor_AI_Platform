@@ -13,6 +13,8 @@ The frontend component and logic layout is documented in [Frontend/README.md](./
 
 For the complete push-ready technical design, diagrams, AI audit flow, and verification checklist, see [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md).
 
+For a role-by-role explanation of what Patient, Doctor, and Admin users can do and how the technology works behind each flow, see [PROJECT_WORK_FLOW.md](./PROJECT_WORK_FLOW.md).
+
 ## Requirements
 
 - Node.js 20 or newer
