@@ -4,18 +4,21 @@ import type { Availability, LocationCoordinates, Section } from "../types/app";
 
 export function usePatientCare({
   user,
+  authenticated,
   section,
   setSection,
   setError,
   setNotice,
 }: {
   user: User | null;
+  authenticated: boolean;
   section: Section;
   setSection: (section: Section) => void;
   setError: (message: string) => void;
   setNotice: (message: string) => void;
 }) {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(false);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState(false);
   const [specialty, setSpecialty] = useState("All specialties");
@@ -28,6 +31,8 @@ export function usePatientCare({
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [bookPhone, setBookPhone] = useState("");
+  const [patientName, setPatientName] = useState("");
+  const [patientEmail, setPatientEmail] = useState("");
   const [bookAddress, setBookAddress] = useState("");
 
   const displayedDoctors = useMemo(() => {
@@ -36,7 +41,7 @@ export function usePatientCare({
       const matchesSpecialty = specialty === "All specialties" || doctor.specialization?.toLowerCase().includes(specialty.toLowerCase());
       const matchesSearch = !term || [doctor.name, doctor.specialization, doctor.clinicName, doctor.clinicAddress].some((value) => value?.toLowerCase().includes(term));
       return matchesSpecialty && matchesSearch;
-    }).slice(0, 10);
+    });
   }, [doctors, search, specialty]);
 
   const loadDoctors = useCallback(async (
@@ -65,25 +70,38 @@ export function usePatientCare({
   }, [setError]);
 
   const loadAppointments = useCallback(async () => {
+    setAppointmentsLoading(true);
     try {
       const result = await api<{ appointments: Appointment[] }>("/api/appointments");
       setAppointments(result.appointments ?? []);
     } catch (reason) {
       setAppointments([]);
       setError(reason instanceof Error ? reason.message : "Unable to load appointments. Please refresh and try again.");
+    } finally {
+      setAppointmentsLoading(false);
     }
   }, [setError]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !authenticated) {
       setAppointments([]);
-      setDoctors([]);
-      setSelectedDoctor(null);
+      setAppointmentsLoading(false);
+      if (!user) {
+        setDoctors([]);
+        setSelectedDoctor(null);
+        setBookDate("");
+        setBookTime("");
+        setAvailability(null);
+        setBookPhone("");
+        setPatientName("");
+        setPatientEmail("");
+        setBookAddress("");
+      }
       return;
     }
     setAppointments([]);
     void loadAppointments();
-  }, [user, loadAppointments]);
+  }, [user, authenticated, loadAppointments]);
 
   useEffect(() => {
     if (user?.role === "patient") void loadDoctors(location ?? undefined);
@@ -145,8 +163,8 @@ export function usePatientCare({
   };
 
   const confirmBooking = async () => {
-    if (!selectedDoctor || !user || !bookDate || !bookTime || !bookPhone.trim()) {
-      setError("Please add your phone number and choose an available appointment time.");
+    if (!selectedDoctor || !user || !bookDate || !bookTime || !bookPhone.trim() || (!authenticated && patientName.trim().length < 2)) {
+      setError("Please add your name and phone number, then choose an available appointment time.");
       return;
     }
     setError("");
@@ -155,28 +173,31 @@ export function usePatientCare({
         method: "POST",
         body: JSON.stringify({
           doctorId: selectedDoctor._id,
-          patientName: user.name,
+          patientName: authenticated ? user.name : patientName.trim(),
           phoneNumber: bookPhone,
           appointmentDate: bookDate,
           appointmentTime: bookTime,
-          email: user.email,
+          email: authenticated ? user.email : patientEmail.trim(),
           address: bookAddress,
         }),
       });
       setSelectedDoctor(null);
-      setNotice("Your appointment is confirmed. The clinic has been added to your care plan.");
-      await loadAppointments();
-      setSection("appointments");
+      setNotice("Your appointment is confirmed. The clinic has your contact details.");
+      if (authenticated) {
+        await loadAppointments();
+        setSection("appointments");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to book this appointment.");
     }
   };
 
   return {
-    appointments, loadAppointments, doctors, displayedDoctors, doctorsLoading,
+    appointments, appointmentsLoading, loadAppointments, doctors, displayedDoctors, doctorsLoading,
     specialty, setSpecialty, search, setSearch, location, locationMessage, requestLocation,
     selectedDoctor, openBooking, closeBooking: () => setSelectedDoctor(null),
     bookDate, setBookDate, bookTime, setBookTime, availability, availabilityLoading,
-    bookPhone, setBookPhone, bookAddress, setBookAddress, checkAvailability, confirmBooking,
+    bookPhone, setBookPhone, patientName, setPatientName, patientEmail, setPatientEmail,
+    bookAddress, setBookAddress, checkAvailability, confirmBooking,
   };
 }

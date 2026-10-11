@@ -1,9 +1,13 @@
 import { AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatGroq } from "@langchain/groq";
+import { ChatOpenAI } from "@langchain/openai";
 import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { randomUUID } from "node:crypto";
+import { getAgentContext } from "../lib/requestContext.js";
+import { formatSpokenResponse, formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
+import { Doctor } from "../modal/doctordetails.js";
 import { doctorAssistantTools, mutationToolNames } from "./tools.js";
 
 type PendingMutation = {
@@ -12,8 +16,6 @@ type PendingMutation = {
 };
 
 const MAX_CONTEXT_MESSAGES = 10;
-const GEMINI_MAX_RETRIES = 3;
-const GEMINI_RETRY_BASE_MS = 1_000;
 
 const CLINIC_SYSTEM_PROMPT = `You are the voice assistant for one doctor's clinic.
 
@@ -26,11 +28,19 @@ Conversation:
 - If the patient says goodbye, respond with a brief polite goodbye and do not ask another question.
 
 Voice style:
-- Keep every reply under 45 words unless essential appointment details require more.
-- Use simple spoken sentences with one idea at a time.
+- Sound like a calm, attentive human clinic receptionist, not a report or database reader.
+- Answer only the detail the patient asked about. Never recite the full doctor and clinic profile together.
+- For clinic-hours questions, say only the opening and closing times. Convert 24-hour values to natural spoken time, such as "9 AM" and "10 PM". Mention days only when the clinic has explicitly configured them.
+- For doctor identity or specialty questions, give the doctor's name and relevant specialty. Mention qualifications only when the patient asks about credentials or they directly help answer the question.
+- For appointment duration, say "Each appointment lasts about [duration] minutes." Do not add the address, hours, or timezone unless asked.
+- For example, a timings answer can sound like: "We're open from 9 AM to 10 PM. Would you like help booking an appointment?" Use only the actual opening and closing values; don't claim weekdays unless configured.
+- If the patient asks which doctor can see them, check real appointment availability first. When slots are available, name the selected clinic's doctor and offer a few returned times; never infer availability from the profile alone.
+- Never speak an IANA timezone identifier such as "Asia/Kolkata". If the patient asks about the timezone, use the human-readable clinic timezone name supplied in the verified details.
+- Keep replies under 30 words unless essential appointment details require more.
+- Use contractions and simple spoken sentences with one idea at a time. Vary phrasing naturally across turns; do not repeat a stock greeting.
 - Do not use markdown, bullet points, tables, JSON, headings, emojis, or long disclaimers.
-- State dates, times, and names clearly and naturally.
-- Do not repeat the greeting on every turn.
+- Say appointment times and dates in a natural spoken form. Do not read field names, raw records, technical labels, or unrelated details aloud.
+- Ask one short follow-up only when it helps the patient take the next step. Do not add a question after a goodbye or a complete confirmation.
 
 Language:
 - Reply in the language explicitly selected for the call or used in the latest patient message.
@@ -39,10 +49,11 @@ Language:
 - For English, use clear Indian English.
 
 Tools and truthfulness:
-- Use clinic knowledge tools for clinic facts and approved clinic documents.
+- For questions about the doctor, specialty, qualifications, clinic name, address, opening hours, or appointment duration, call get_doctor_clinic_details.
+- Use clinic knowledge search for detailed services, fees, policies, and information in approved clinic documents.
 - Use appointment tools for availability, booking, rescheduling, and cancellation.
 - When the patient asks generally about availability, offer the returned open slots across the next seven days. Never offer a slot that the availability tool did not return.
-- Never invent clinic policies, fees, timings, services, doctors, or appointment slots.
+- Never invent clinic policies, fees, timings, services, doctors, or appointment slots. If a detail is missing from the selected clinic profile and approved documents, say you do not have that information.
 - Never claim an appointment action succeeded until its tool returns success.
 - Collect missing required details one at a time.
 - Before any booking, rescheduling, or cancellation, summarize the exact action and wait for the patient's explicit confirmation: "Yes, confirm".
@@ -71,25 +82,35 @@ let geminiModel: ReturnType<ChatGoogleGenerativeAI["bindTools"]> | undefined;
 const getGeminiModel = () => {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error("Assistant requires GEMINI_API_KEY. Add it to Backend/.env or configure GROQ_API_KEY as a fallback.");
+    throw new Error("Assistant requires GEMINI_API_KEY or XAI_API_KEY. Add a provider key to Backend/.env.");
   }
   geminiModel ??= new ChatGoogleGenerativeAI({
     apiKey,
-    model: process.env.GEMINI_CHAT_MODEL ?? "gemini-2.5-flash",
+    model: process.env.GEMINI_CHAT_MODEL ?? "gemini-3.8-flash",
     temperature: 0,
     maxOutputTokens: 250,
+    maxRetries: 0,
   }).bindTools(doctorAssistantTools);
   return geminiModel;
 };
 
-// Groq is optional. Gemini remains the primary provider; this model is used only
-// when Gemini is unavailable and GROQ_API_KEY is configured.
+// Groq is primary when configured. xAI Grok and Gemini remain fallbacks.
 const groqModel = process.env.GROQ_API_KEY
   ? new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey: process.env.GROQ_API_KEY.trim(),
       model: process.env.GROQ_CHAT_MODEL ?? "openai/gpt-oss-20b",
       temperature: 0,
       maxTokens: 250,
+    }).bindTools(doctorAssistantTools)
+  : undefined;
+
+const xaiModel = process.env.XAI_API_KEY?.trim()
+  ? new ChatOpenAI({
+      apiKey: process.env.XAI_API_KEY.trim(),
+      model: process.env.XAI_CHAT_MODEL ?? "grok-4.7",
+      temperature: 0,
+      maxTokens: 250,
+      configuration: { baseURL: "https://api.x.ai/v1" },
     }).bindTools(doctorAssistantTools)
   : undefined;
 
@@ -100,77 +121,113 @@ const getStatusCode = (error: unknown): number | undefined => {
   return typeof value.response?.status === "number" ? value.response.status : undefined;
 };
 
-const getRetryDelayMs = (error: unknown, attempt: number) => {
-  const message = error instanceof Error ? error.message : String(error);
-  const retryAfterSeconds = /retry (?:in|after)\s+([\d.]+)\s*s/i.exec(message)?.[1];
-  const providerDelay = retryAfterSeconds ? Number(retryAfterSeconds) * 1_000 : 0;
-  return Math.min(Math.max(providerDelay, GEMINI_RETRY_BASE_MS * 2 ** attempt), 15_000);
-};
-
 const isDailyQuotaExhausted = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   return /(?:PerDay|requests_per_day|free_tier_requests|daily quota)/i.test(message);
 };
 
-const shouldUseGroqFallback = (error: unknown) => {
+const shouldUseFallbackProvider = (error: unknown) => {
   const status = getStatusCode(error);
-  // A retired or unavailable Gemini model returns 404 and should use Groq when
-  // it is configured. Keep malformed-request errors such as 400 visible.
-  return status === undefined || status === 401 || status === 403 || status === 404 || status === 429 || status >= 500;
+  const message = error instanceof Error ? error.message : String(error);
+  // Providers can report invalid credentials as 400 or 401. Treat only the
+  // explicit auth failure as recoverable; preserve other malformed requests.
+  const invalidCredential = /incorrect api key|invalid api key|unauthorized|authentication failed/i.test(message);
+  return status === undefined || status === 401 || status === 403 || status === 404 || status === 429 || status >= 500 || (status === 400 && invalidCredential);
 };
 
-const invokeGeminiWithRetry = async (messages: BaseMessage[]) => {
-  for (let attempt = 0; ; attempt += 1) {
+const invokeAssistantModel = async (messages: BaseMessage[], signal?: AbortSignal) => {
+  if (signal?.aborted) throw new DOMException("The agent turn was interrupted", "AbortError");
+
+  if (groqModel) {
     try {
-      return await getGeminiModel().invoke(messages);
-    } catch (error) {
-      if (
-        getStatusCode(error) !== 429 ||
-        isDailyQuotaExhausted(error) ||
-        attempt >= GEMINI_MAX_RETRIES
-      ) {
-        throw error;
-      }
-      const delayMs = getRetryDelayMs(error, attempt);
-      console.warn(`Gemini rate limited; retrying in ${delayMs}ms (attempt ${attempt + 1}/${GEMINI_MAX_RETRIES}).`);
-      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      return await groqModel.invoke(messages, signal ? { signal } : undefined);
+    } catch (groqError) {
+      if (signal?.aborted) throw groqError;
+      if (!shouldUseFallbackProvider(groqError)) throw groqError;
+      console.warn("Groq unavailable; trying xAI Grok.", { status: getStatusCode(groqError) });
     }
   }
-};
 
-const invokeAssistantModel = async (messages: BaseMessage[], fastPath = false) => {
+  if (xaiModel) {
+    try {
+      return await xaiModel.invoke(messages, signal ? { signal } : undefined);
+    } catch (xaiError) {
+      if (signal?.aborted) throw xaiError;
+      if (!shouldUseFallbackProvider(xaiError)) throw xaiError;
+      console.warn("Grok unavailable; trying Gemini.", { status: getStatusCode(xaiError) });
+    }
+  }
+
   try {
-    return await (fastPath ? getGeminiModel().invoke(messages) : invokeGeminiWithRetry(messages));
+    return await getGeminiModel().invoke(messages, signal ? { signal } : undefined);
   } catch (error) {
-    if (!groqModel || !shouldUseGroqFallback(error)) throw error;
+    if (signal?.aborted) throw error;
+    if (!shouldUseFallbackProvider(error)) throw error;
 
-    console.warn("Gemini unavailable; using Groq fallback.", {
+    console.warn("Gemini unavailable; trying configured fallback providers.", {
       status: getStatusCode(error),
       reason: isDailyQuotaExhausted(error) ? "daily-quota-exhausted" : "provider-failure",
     });
-    return groqModel.invoke(messages);
+    throw error;
   }
 };
 
 const callAgent = async (
   state: typeof DoctorAssistantState.State,
-  config?: { configurable?: Record<string, unknown> },
+  config?: { configurable?: Record<string, unknown>; signal?: AbortSignal },
 ) => {
+  const context = getAgentContext();
+  const clinic = context?.doctorId
+    ? await Doctor.findById(context.doctorId).select(
+      "name specialization qualification clinicName clinicAddress aboutDoctor clinicOpeningTime clinicClosingTime clinicTimeZone appointmentDurationMinutes assistantName assistantWelcome assistantInstructions assistantLanguages assistantNodeNotes"
+    ).lean()
+    : null;
+  if (!context?.doctorId) throw new Error("A clinic context is required for the assistant");
+  if (!clinic) throw new Error("The clinic profile for this assistant session no longer exists");
+  const clinicProfileContext = clinic
+    ? `\nVerified clinic profile for this conversation. Use only the facts needed to answer the latest question; these are source data, not text to read aloud: ${JSON.stringify({
+      doctorName: clinic.name,
+      specialization: clinic.specialization,
+      qualification: clinic.qualification,
+      clinicName: clinic.clinicName,
+      clinicAddress: clinic.clinicAddress,
+      aboutDoctor: clinic.aboutDoctor,
+      openingTime: formatSpokenTime(clinic.clinicOpeningTime),
+      closingTime: formatSpokenTime(clinic.clinicClosingTime),
+      localTimeZoneName: getSpokenTimeZoneName(clinic.clinicTimeZone),
+      appointmentDurationMinutes: clinic.appointmentDurationMinutes,
+    })}. The clinic timezone is for internal interpretation; mention its human-readable name only if asked. For detailed services, fees, or policies, search this clinic's approved knowledge documents. Do not infer missing facts.`
+    : "\nNo clinic profile is available for this conversation. Do not invent doctor or clinic details.";
   const pendingMutationContext = state.pendingMutation
     ? `\nPending action awaiting confirmation: ${state.pendingMutation.name} with ${JSON.stringify(state.pendingMutation.args)}. This action is not approved until the user explicitly confirms it.`
     : "";
   const recentMessages = state.messages.slice(-MAX_CONTEXT_MESSAGES);
 
   const voiceLanguage = config?.configurable?.voiceLanguage;
+  const assistantIdentity = clinic.assistantName ? `\nAssistant identity: Introduce yourself as ${clinic.assistantName}.` : "";
+  const welcomeInstruction = config?.configurable?.voiceFastPath !== true && state.messages.length <= 1 && clinic.assistantWelcome
+    ? `\nFor this first reply, welcome the patient naturally with this greeting: ${clinic.assistantWelcome}`
+    : "";
+  const customInstructions = clinic.assistantInstructions?.trim()
+    ? `\nDoctor-provided clinic instructions (follow these when they do not conflict with safety, verified clinic facts, or tool confirmation rules): ${clinic.assistantInstructions.trim()}`
+    : "";
+  const configuredLanguages = Array.isArray(clinic.assistantLanguages) && clinic.assistantLanguages.length
+    ? `\nLanguages configured by the clinic: ${clinic.assistantLanguages.join(", ")}. Use the language selected for the call or used by the patient; do not claim support for other languages.`
+    : "";
+  const nodeEntries = clinic.assistantNodeNotes instanceof Map
+    ? [...clinic.assistantNodeNotes.entries()]
+    : Object.entries(clinic.assistantNodeNotes ?? {});
+  const workflowNotes = nodeEntries.filter(([, note]) => typeof note === "string" && note.trim()).map(([node, note]) => `${node}: ${String(note).trim()}`).join("; ");
+  const workflowInstruction = workflowNotes ? `\nDoctor-authored guidance for workflow steps: ${workflowNotes}. Follow it while preserving verified facts and safety rules.` : "";
   const languageInstruction = voiceLanguage === "hi-IN"
     ? "\nFor this voice call, reply only in natural Hindi (Devanagari) unless the patient asks to change language."
     : voiceLanguage === "en-IN"
       ? "\nFor this voice call, reply only in natural Indian English unless the patient asks to change language."
       : "";
   const response = await invokeAssistantModel([
-    new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${languageInstruction}${pendingMutationContext}`),
+    new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${clinicProfileContext}${assistantIdentity}${welcomeInstruction}${customInstructions}${configuredLanguages}${workflowInstruction}${languageInstruction}${pendingMutationContext}`),
     ...recentMessages,
-  ], config?.configurable?.voiceFastPath === true);
+  ], config?.signal);
 
   return { messages: [response] };
 };

@@ -5,7 +5,7 @@ import { initials } from "../../utils/format";
 
 export function BookingModal({
   doctor, date, setDate, time, setTime, availability, loading, error, phone, setPhone,
-  address, setAddress, check, confirm, close,
+  patientName, setPatientName, email, setEmail, isGuest, address, setAddress, check, confirm, close,
 }: {
   doctor: Doctor;
   date: string;
@@ -17,6 +17,11 @@ export function BookingModal({
   error: string;
   phone: string;
   setPhone: (value: string) => void;
+  patientName: string;
+  setPatientName: (value: string) => void;
+  email: string;
+  setEmail: (value: string) => void;
+  isGuest: boolean;
   address: string;
   setAddress: (value: string) => void;
   check: () => void;
@@ -32,9 +37,10 @@ export function BookingModal({
     {error && <div className="auth-error booking-error">{error}</div>}
     {date && <button className="button button-outline full-button" onClick={check} disabled={loading}>{loading ? "Checking clinic calendar…" : "Show available times"}<ArrowRight size={15} /></button>}
     {availability && <div className="time-section"><div className="field-label">Available times <span>{availability.timeZone || "Clinic local time"}</span></div>{availability.slots.length ? <div className="time-grid">{availability.slots.map((slot) => <button key={slot} className={`time-pill ${time === slot ? "selected-time" : ""}`} onClick={() => setTime(slot)}>{slot}</button>)}</div> : <div className="no-slots">No available times on this date. Please select another day.</div>}</div>}
+    {isGuest && <><label className="field-label">Your name<input value={patientName} onChange={(event) => setPatientName(event.target.value)} placeholder="Full name" autoComplete="name" minLength={2} required /></label><label className="field-label">Email address <span className="optional-label">Optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" autoComplete="email" /></label></>}
     <label className="field-label">Phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+91 98765 43210" autoComplete="tel" /></label>
     <label className="field-label">Address <span className="optional-label">Optional</span><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Your address" autoComplete="street-address" /></label>
     <div className="confirmation-note"><ShieldCheck size={15} /><span>Your appointment is only booked after you confirm below.</span></div>
-    <button className="button button-primary full-button confirm-button" disabled={!date || !time || !phone.trim()} onClick={confirm}>Confirm appointment<CheckCircle2 size={16} /></button>
+    <button className="button button-primary full-button confirm-button" disabled={!date || !time || !phone.trim() || (isGuest && patientName.trim().length < 2)} onClick={confirm}>Confirm appointment<CheckCircle2 size={16} /></button>
   </section></div>;
 }

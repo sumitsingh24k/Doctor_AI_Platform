@@ -7,6 +7,7 @@ declare global {
         userId: string;
         role: AuthRole;
         doctorId?: string;
+        expiresAt: number;
       };
     }
   }

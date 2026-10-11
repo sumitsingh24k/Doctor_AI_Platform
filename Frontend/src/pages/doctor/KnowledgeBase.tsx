@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookOpen, FileText } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { ApiError, api } from "../../api";
 
 type UploadedFile = { name: string; size: number; status: string };
@@ -21,7 +21,7 @@ const indexingStageLabel = (stage?: string) => {
   return stage ? labels[stage] ?? stage : "indexing";
 };
 
-export function KnowledgeBase() {
+export function KnowledgeBase({ onContinue, onboarding = false }: { onContinue?: () => void; onboarding?: boolean }) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -62,5 +62,5 @@ export function KnowledgeBase() {
     }
   };
 
-  return <div className="page-wrap"><div className="page-title-row"><div><div className="date-kicker">AI CLINIC KNOWLEDGE</div><h1>Knowledge Base</h1><p>Give your assistant the clinic information it needs to help patients.</p></div></div><label className="upload-zone"><input type="file" accept="application/pdf,.pdf" multiple onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /><div className="upload-icon"><FileText size={20} /></div><h3>{busy ? "Uploading your document…" : "Drop your clinic PDFs here"}</h3><p>Pricing, post-op care, clinic FAQs, insurance — or click to browse</p><span className="button button-outline button-small">Browse files</span><small>PDF only · Maximum 10 MB per document</small></label>{message && <div className={message.includes("failed") || message.includes("not a PDF") ? "error-banner" : "notice"}>{message}</div>}<div className="section-heading knowledge-heading"><div><h2>Uploaded documents</h2><p>Documents you add will be available to your clinic assistant.</p></div></div>{files.length ? <div className="knowledge-grid">{files.map((file, index) => <div className="knowledge-card" key={`${file.name}-${index}`}><div className="knowledge-file-icon"><FileText size={18} /></div><div><b>{file.name}</b><span>{(file.size / 1024).toFixed(0)} KB · {file.status}</span></div><span className="file-tag">Clinic PDF</span></div>)}</div> : <div className="empty-state empty-knowledge"><div className="empty-icon"><BookOpen size={22} /></div><h3>Your knowledge base is ready</h3><p>Upload a PDF to help the assistant answer clinic-specific questions.</p></div>}</div>;
+  return <div className={`page-wrap ${onboarding ? "onboarding-knowledge" : ""}`}>{!onboarding && <div className="page-title-row"><div><div className="date-kicker">AI CLINIC KNOWLEDGE</div><h1>Knowledge base</h1><p>Upload clinic documents for the assistant to use when answering patient questions.</p></div></div>}<label className="upload-zone"><input type="file" accept="application/pdf,.pdf" multiple disabled={busy} onChange={(event) => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /><h3>{busy ? "Uploading document…" : "Upload clinic documents"}</h3><p>Choose PDFs about services, fees, clinic policies, and patient instructions.</p><span className="button button-outline button-small">Browse files</span><small>PDF only · Maximum 10 MB per document</small></label>{message && <div className={message.includes("failed") || message.includes("not a PDF") || message.includes("Could not") ? "error-banner" : "notice"}>{message}</div>}<div className="section-heading knowledge-heading"><div><h2>Uploads in this session</h2><p>Uploaded files are indexed for this clinic’s assistant.</p></div></div>{files.length ? <div className="knowledge-grid">{files.map((file, index) => <div className="knowledge-card" key={`${file.name}-${index}`}><div><b>{file.name}</b><span>{(file.size / 1024).toFixed(0)} KB</span></div><span className="file-tag">Indexed</span></div>)}</div> : <div className="empty-state empty-knowledge"><h3>No uploads in this session</h3><p>Upload a PDF to add clinic-specific information to the assistant.</p></div>}{onboarding && <div className="onboarding-step-actions"><button className="button button-primary" type="button" disabled={busy} onClick={onContinue}>Finish setup<ArrowRight size={15} /></button><span>Document upload is optional. You can add files later.</span></div>}</div>;
 }

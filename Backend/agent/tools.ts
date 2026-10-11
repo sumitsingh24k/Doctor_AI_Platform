@@ -8,6 +8,39 @@ import {
   rescheduleAppointment,
 } from "../services/appointment-actions.service.js";
 import { normalizeAppointmentDate } from "../lib/appointmentDate.js";
+import { getAgentContext } from "../lib/requestContext.js";
+import { formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
+import { Doctor } from "../modal/doctordetails.js";
+
+export const getDoctorClinicDetailsTool = tool(
+  async () => {
+    const context = getAgentContext();
+    if (!context?.doctorId) return JSON.stringify({ error: "Clinic context is unavailable" });
+    const doctor = await Doctor.findById(context.doctorId).select(
+      "name specialization qualification clinicName clinicAddress aboutDoctor clinicOpeningTime clinicClosingTime clinicTimeZone appointmentDurationMinutes"
+    ).lean();
+    if (!doctor) return JSON.stringify({ error: "Clinic profile not found" });
+
+    return JSON.stringify({
+      doctorName: doctor.name,
+      specialization: doctor.specialization,
+      qualification: doctor.qualification,
+      clinicName: doctor.clinicName,
+      clinicAddress: doctor.clinicAddress,
+      aboutDoctor: doctor.aboutDoctor,
+      openingTime: formatSpokenTime(doctor.clinicOpeningTime),
+      closingTime: formatSpokenTime(doctor.clinicClosingTime),
+      localTimeZoneName: getSpokenTimeZoneName(doctor.clinicTimeZone),
+      appointmentDurationMinutes: doctor.appointmentDurationMinutes,
+    });
+  },
+  {
+    name: "get_doctor_clinic_details",
+    description:
+      "Get verified public facts for the selected clinic. Use only facts that answer the patient's question: hours questions need opening and closing time only; doctor identity questions need name and specialty, with qualifications only when relevant; duration questions need duration only. Times are already formatted for speech. Never read the entire result aloud or return another clinic's details.",
+    schema: z.object({}),
+  }
+);
 
 export const searchDoctorKnowledgeTool = tool(
   async ({ query }) => {
@@ -32,11 +65,27 @@ export const searchDoctorKnowledgeTool = tool(
 );
 
 export const getAvailableSlotsTool = tool(
-  async ({ date }) => JSON.stringify(await getAvailableAppointmentWeek(date)),
+  async ({ date }) => {
+    const result = await getAvailableAppointmentWeek(date);
+    return JSON.stringify({
+      from: result.from,
+      through: result.through,
+      appointmentDurationMinutes: result.appointmentDurationMinutes,
+      clinicLocalTimeZoneName: getSpokenTimeZoneName(result.timeZone),
+      days: result.days.map(({ date: slotDate, slots }) => ({
+        date: slotDate,
+        slots: slots.map((slot) => formatSpokenTime(slot)),
+      })),
+      suggestedSlots: result.suggestedSlots.map(({ date: slotDate, time }) => ({
+        date: slotDate,
+        time: formatSpokenTime(time),
+      })),
+    });
+  },
   {
     name: "get_available_appointment_slots",
     description:
-      "Get genuinely available appointment slots for a rolling seven-day window. If the patient gives a date, start from that date; otherwise start from today. Return only slots that are actually open. Never invent slots.",
+      "Get genuinely available appointment slots for a rolling seven-day window. If the patient gives a date, start from that date; otherwise start from today. Times are formatted for speech in the clinic's local time. Offer only a few relevant returned slots, never dump the full result or invent slots. Use a human-readable timezone name only if the patient asks.",
     schema: z.object({
       date: z.string().optional().transform((value) => value ? normalizeAppointmentDate(value) : undefined).refine((value) => !value || /^\d{4}-\d{2}-\d{2}$/.test(value), "Please provide a valid appointment date, for example 15 September or tomorrow"),
     }),
@@ -120,6 +169,7 @@ export const mutationToolNames = new Set([
 ]);
 
 export const doctorAssistantTools = [
+  getDoctorClinicDetailsTool,
   searchDoctorKnowledgeTool,
   getAvailableSlotsTool,
   bookAppointmentTool,

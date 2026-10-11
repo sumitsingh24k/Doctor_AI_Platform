@@ -6,6 +6,7 @@ import {
   storeDoctorGoogleRefreshToken,
 } from "../lib/google.js";
 import { Doctor } from "../modal/doctordetails.js";
+import User from "../modal/userschema.js";
 import { createAgentToken, verifyAgentToken } from "../lib/tenantContext.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
@@ -15,13 +16,17 @@ googleCalendarRoutes.get("/doctors/:doctorId/connect", requireAuth, requireRole(
   try {
     const doctor = await Doctor.findById(req.params.doctorId);
     if (!doctor) return res.status(404).json({ message: "Doctor not found" });
-    if (req.user?.role === "doctor" && req.user.doctorId !== doctor._id.toString()) {
-      return res.status(403).json({ message: "You can only connect your own clinic calendar" });
+    if (req.user?.role === "doctor") {
+      const account = await User.findById(req.user.userId).select("doctorId");
+      if (account?.doctorId?.toString() !== doctor._id.toString()) {
+        return res.status(403).json({ message: "You can only connect your own clinic calendar" });
+      }
     }
     const state = createAgentToken({
       doctorId: doctor._id.toString(),
       threadId: "google-oauth",
-      expiresInSeconds: 600,
+      // Keep OAuth state valid while the user reviews Google's consent screen.
+      expiresInSeconds: 30 * 60,
     });
     const authUrl = createDoctorGoogleAuthUrl(state);
     return res.status(200).json({ url: authUrl });
@@ -37,8 +42,11 @@ googleCalendarRoutes.get("/doctors/:doctorId/events", requireAuth, requireRole("
   try {
     const doctor = await Doctor.findById(req.params.doctorId);
     if (!doctor) return res.status(404).json({ message: "Doctor not found" });
-    if (req.user?.role === "doctor" && req.user.doctorId !== doctor._id.toString()) {
-      return res.status(403).json({ message: "You can only view your own clinic calendar" });
+    if (req.user?.role === "doctor") {
+      const account = await User.findById(req.user.userId).select("doctorId");
+      if (account?.doctorId?.toString() !== doctor._id.toString()) {
+        return res.status(403).json({ message: "You can only view your own clinic calendar" });
+      }
     }
 
     const start = typeof req.query.start === "string" ? new Date(req.query.start) : null;
@@ -61,12 +69,15 @@ googleCalendarRoutes.get("/doctors/:doctorId/events", requireAuth, requireRole("
 
 const googleOAuthCallback = async (req: Request, res: Response) => {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-  const redirectToFrontend = (status: "connected" | "error" | "cancelled") => {
+  const redirectToFrontend = (status: "connected" | "error" | "cancelled" | "denied" | "expired") => {
     const target = new URL("/", frontendUrl);
     target.searchParams.set("calendar", status);
     return res.redirect(target.toString());
   };
 
+  if (req.query.error === "access_denied") {
+    return redirectToFrontend("denied");
+  }
   if (typeof req.query.error === "string") {
     return redirectToFrontend("cancelled");
   }
@@ -85,6 +96,9 @@ const googleOAuthCallback = async (req: Request, res: Response) => {
     await storeDoctorGoogleRefreshToken(context.doctorId, code);
     return redirectToFrontend("connected");
   } catch (error) {
+    if (error instanceof Error && error.name === "TokenExpiredError") {
+      return redirectToFrontend("expired");
+    }
     console.error("Unable to complete Google Calendar connection:", error);
     return redirectToFrontend("error");
   }

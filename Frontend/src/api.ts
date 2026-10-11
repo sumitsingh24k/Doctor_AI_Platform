@@ -42,6 +42,24 @@ export type Appointment = {
   visitType?: string;
 };
 
+let refreshInFlight: Promise<string | null> | null = null;
+
+const refreshAccessToken = () => {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch("/api/auth/refresh", { method: "POST", credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const refreshed = await response.json() as { accessToken?: string };
+        if (!refreshed.accessToken) return null;
+        localStorage.setItem("medimind.accessToken", refreshed.accessToken);
+        return refreshed.accessToken;
+      })
+      .catch(() => null)
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+};
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const setAccessToken = (token: string | null) => {
@@ -60,15 +78,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     path !== "/api/auth/login" &&
     path !== "/api/auth/register"
   ) {
-    const refreshResponse = await fetch("/api/auth/refresh", { method: "POST", credentials: "include" });
-    if (refreshResponse.ok) {
-      const refreshed = await refreshResponse.json() as { accessToken: string };
-      localStorage.setItem("medimind.accessToken", refreshed.accessToken);
-      setAccessToken(refreshed.accessToken);
+    const hadAccessToken = Boolean(localStorage.getItem("medimind.accessToken"));
+    const refreshedToken = await refreshAccessToken();
+    if (refreshedToken) {
+      setAccessToken(refreshedToken);
       response = await send();
     } else {
       localStorage.removeItem("medimind.accessToken");
       setAccessToken(null);
+      if (hadAccessToken) window.dispatchEvent(new Event("medimind:session-expired"));
     }
   }
   if (response.status === 204) return undefined as T;

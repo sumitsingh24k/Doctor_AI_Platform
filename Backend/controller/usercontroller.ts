@@ -1,6 +1,5 @@
 import { Request, Response } from "express";
 import {Doctor} from "../modal/doctordetails.js";
-import { getAgentContext } from "../lib/requestContext.js";
 import User from "../modal/userschema.js";
 
 export const doctorDetails = async (req: Request, res: Response) => {
@@ -66,8 +65,9 @@ export const doctorDetails = async (req: Request, res: Response) => {
     }
 
     if (!req.user) return res.status(401).json({ message: "Authentication required" });
-    const context = getAgentContext();
-    const doctorId = req.user.doctorId ?? context?.doctorId;
+    const account = await User.findById(req.user.userId).select("doctorId");
+    if (!account) return res.status(401).json({ message: "User account is no longer available" });
+    const doctorId = account.doctorId?.toString();
     const profileData = {
       name: name.trim(),
       specialization: specialization.trim(),
@@ -90,7 +90,7 @@ export const doctorDetails = async (req: Request, res: Response) => {
       ? await Doctor.findOneAndUpdate(
         { _id: doctorId },
         { $set: profileData },
-        { new: true, runValidators: true }
+        { returnDocument: "after", runValidators: true }
       ).select("-googleRefreshToken")
       : await Doctor.create(profileData);
 
@@ -117,8 +117,9 @@ export const doctorDetails = async (req: Request, res: Response) => {
 export const getDoctorProfile = async (req: Request, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Authentication required" });
-    const context = getAgentContext();
-    const doctorId = req.user.doctorId ?? context?.doctorId;
+    const account = await User.findById(req.user.userId).select("doctorId");
+    if (!account) return res.status(401).json({ message: "User account is no longer available" });
+    const doctorId = account.doctorId?.toString();
     if (!doctorId) return res.status(404).json({ message: "Doctor profile not found" });
     const doctor = await Doctor.findOne({ _id: doctorId });
 

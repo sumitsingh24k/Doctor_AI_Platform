@@ -14,9 +14,15 @@ interface IDoctor{
     createdby: Types.ObjectId;
     googleRefreshToken?: string | null;
     googleCalendarId?: string | null;
+    setupComplete?: boolean;
     appointmentDurationMinutes?: number;
     clinicLatitude?: number;
     clinicLongitude?: number;
+    assistantName?: string;
+    assistantWelcome?: string;
+    assistantInstructions?: string;
+    assistantLanguages?: string[];
+    assistantNodeNotes?: Map<string, string>;
     
 }
 
@@ -72,6 +78,11 @@ googleCalendarId:{
     default:"primary",
 },
 
+setupComplete: {
+    type: Boolean,
+    default: false,
+},
+
 appointmentDurationMinutes:{
     type:Number,
     min:5,
@@ -90,6 +101,12 @@ clinicLongitude:{
     min:-180,
     max:180,
 },
+
+assistantName: { type: String, default: "Clinic assistant", trim: true, maxlength: 60 },
+assistantWelcome: { type: String, default: "Hello, how can I help you today?", trim: true, maxlength: 240 },
+assistantInstructions: { type: String, default: "", trim: true, maxlength: 1200 },
+assistantLanguages: { type: [String], default: ["en-IN", "hi-IN"] },
+assistantNodeNotes: { type: Map, of: String, default: {} },
 
 
 

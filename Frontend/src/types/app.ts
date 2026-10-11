@@ -30,6 +30,7 @@ export type LocationCoordinates = {
 
 export type PatientCareActions = {
   appointments: Appointment[];
+  appointmentsLoading: boolean;
   loadAppointments: () => Promise<void>;
   doctors: Doctor[];
   displayedDoctors: Doctor[];

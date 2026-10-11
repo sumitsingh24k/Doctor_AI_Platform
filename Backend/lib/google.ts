@@ -10,13 +10,19 @@ const DEFAULT_APPOINTMENT_DURATION_MINUTES = Number(
 );
 
 export const getGoogleOAuthClient = () => {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim();
 
-  if (!clientId || !clientSecret || !redirectUri) {
+  const missing = [
+    !clientId && "GOOGLE_CLIENT_ID",
+    !clientSecret && "GOOGLE_CLIENT_SECRET",
+    !redirectUri && "GOOGLE_REDIRECT_URI",
+  ].filter((name): name is string => Boolean(name));
+
+  if (missing.length) {
     throw new Error(
-      "Google Calendar OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI."
+      `Google Calendar OAuth is missing ${missing.join(", ")}. Add the value${missing.length > 1 ? "s" : ""} to Backend/.env and restart the backend.`
     );
   }
 
@@ -70,37 +76,30 @@ export const findConnectedDoctor = async (doctorId?: string) => {
     }
     const scopedDoctor = await Doctor.findOne({
       _id: context.doctorId,
-      googleRefreshToken: { $nin: [null, ""] },
+      setupComplete: true,
+      googleRefreshToken: { $type: "string", $ne: "" },
     });
     if (!scopedDoctor) {
-      throw new Error("Doctor's Google Calendar is not connected");
+      throw new Error("Clinic booking setup is incomplete or its Google Calendar is not connected");
     }
     return scopedDoctor;
   }
 
   if (doctorId) {
-    const doctor = await Doctor.findById(doctorId);
+    const doctor = await Doctor.findOne({ _id: doctorId, setupComplete: true });
 
     if (!doctor) {
       throw new Error("Doctor not found");
     }
 
     if (!doctor.googleRefreshToken) {
-      throw new Error("Doctor's Google Calendar is not connected");
+      throw new Error("Clinic booking setup is not complete or Google Calendar is not connected");
     }
 
     return doctor;
   }
 
-  const doctor = await Doctor.findOne({
-    googleRefreshToken: { $nin: [null, ""] },
-  });
-
-  if (!doctor) {
-    throw new Error("No doctor with a connected Google Calendar was found");
-  }
-
-  return doctor;
+  throw new Error("A doctor ID is required to select a Google Calendar");
 };
 
 const parseAppointmentDate = (appointmentDate: unknown) => {

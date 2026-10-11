@@ -10,10 +10,17 @@ export function useAuthSession() {
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
+    const handleSessionExpired = () => {
+      setUser(null);
+      setError("Your session expired. Sign in again to continue.");
+    };
+    window.addEventListener("medimind:session-expired", handleSessionExpired);
     const params = new URLSearchParams(window.location.search);
     const calendarStatus = params.get("calendar");
     if (calendarStatus === "connected") setNotice("Google Calendar connected. Your clinic events will appear in the calendar.");
     if (calendarStatus === "cancelled") setError("Google Calendar connection was cancelled.");
+    if (calendarStatus === "denied") setError("Google blocked Calendar access because this OAuth app is restricted to approved testers or has not completed verification. Add this doctor as a test user for development, or publish and verify the app in Google Cloud for all doctors.");
+    if (calendarStatus === "expired") setError("Google Calendar connection timed out. Start the connection again and complete Google's consent screen within 30 minutes.");
     if (calendarStatus === "error") setError("Google Calendar could not be connected. Check your Google OAuth settings and try again.");
     if (calendarStatus) {
       window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
@@ -26,6 +33,7 @@ export function useAuthSession() {
       })
       .catch(() => localStorage.removeItem("medimind.accessToken"))
       .finally(() => setLoadingSession(false));
+    return () => window.removeEventListener("medimind:session-expired", handleSessionExpired);
   }, []);
 
   const authenticate = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -40,6 +48,7 @@ export function useAuthSession() {
         ? await signUp(name, email, password, authRole)
         : await signIn(email, password);
       if (nextUser.role !== authRole && !registering) {
+        await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
         localStorage.removeItem("medimind.accessToken");
         throw new Error(`This account is registered as a ${nextUser.role}. Choose the matching sign-in option.`);
       }

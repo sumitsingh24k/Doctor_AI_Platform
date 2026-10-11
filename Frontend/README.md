@@ -10,6 +10,8 @@ The React/Vite frontend talks to the Express backend through the Vite developmen
 
 The development proxy uses `127.0.0.1:3000` to avoid Windows `localhost` IPv4/IPv6 resolution mismatches. If the backend runs on a different host or port, update the proxy targets in `vite.config.ts`. Production deployments should route `/api` and `/ws` to the backend origin.
 
+If frontend and backend run on different hosts, create `Frontend/.env.local` with `VITE_BACKEND_URL=http://localhost:3000` (replace the host/port with the backend address), then restart Vite. The same setting selects the backend WebSocket origin for voice calls. For an HTTPS frontend, the backend must be reachable over HTTPS so the voice connection can use secure WebSockets (`wss`).
+
 Patient location is requested only after the patient chooses **Use my location**. Once permission is granted, the doctor directory displays an interactive OpenStreetMap with the patient's position and nearby clinics that have saved coordinates. Patients can open a clinic marker and start the usual booking flow from its popup. OpenStreetMap attribution is displayed on the map. Doctor results are limited to the closest 10 matching clinics; clinics need saved latitude/longitude in doctor settings to appear as map markers.
 
 Frontend structure:
