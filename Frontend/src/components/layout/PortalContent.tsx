@@ -62,6 +62,7 @@ export function PortalContent({ user, section, setSection, care, assistant, doct
         doctorsLoading={assistant.doctorsLoading}
         selectedDoctorId={assistant.selectedDoctorId}
         setSelectedDoctorId={assistant.setSelectedDoctorId}
+        reloadDoctors={() => void assistant.loadDoctors()}
       />;
     }
     if (section === "appointments") {
@@ -109,6 +110,7 @@ export function PortalContent({ user, section, setSection, care, assistant, doct
       doctorsLoading={assistant.doctorsLoading}
       selectedDoctorId={doctorProfile.profile._id || assistant.selectedDoctorId}
       setSelectedDoctorId={assistant.setSelectedDoctorId}
+      reloadDoctors={() => void assistant.loadDoctors()}
     />;
   }
 

@@ -7,7 +7,7 @@ import type { Doctor } from "../../api";
 
 export function AssistantPage({
   messages, input, setInput, send, busy, recording, speaking, voiceActive, voiceState, startRecording, stopVoice, onBrowseDoctors, endRef,
-  doctors, doctorsLoading, selectedDoctorId, setSelectedDoctorId,
+  doctors, doctorsLoading, selectedDoctorId, setSelectedDoctorId, reloadDoctors,
   doctorMode = false,
 }: {
   messages: ChatMessage[];
@@ -27,17 +27,18 @@ export function AssistantPage({
   doctorsLoading: boolean;
   selectedDoctorId: string;
   setSelectedDoctorId: (doctorId: string) => void;
+  reloadDoctors: () => void;
   doctorMode?: boolean;
 }) {
-  const voiceStatus = voiceState === "speaking" ? "Speaking. Interrupt me any time."
+  const voiceStatus = voiceState === "speaking" ? "Speaking. I’ll listen again when the reply ends."
     : voiceState === "processing" ? "Understanding your question…"
-      : voiceState === "interrupted" ? "Stopping the last reply; listening…"
+    : voiceState === "interrupted" ? "Finishing the current request…"
         : voiceState === "error" ? "Voice assistant needs attention. You can try speaking again."
-          : voiceActive ? "Listening continuously. Speak naturally or interrupt me."
+          : voiceActive ? "Listening. Speak one short request, then pause for a reply."
             : "Tap the microphone to start a voice conversation.";
   return <div className="assistant-layout">
     <div className="assistant-main"><div className="assistant-header"><div className="assistant-avatar"><Sparkles size={20} /></div><div><div className="assistant-title">{doctorMode ? "Clinic voice playground" : "Your care assistant"} <span className="online-dot" /></div><div className="assistant-subtitle">{doctorMode ? "Test your configured clinic assistant" : "Here to help, whenever you need"}</div></div>{doctors.length > 1 && <label className="assistant-clinic-picker">Clinic<select value={selectedDoctorId} onChange={(event) => { stopVoice(); setSelectedDoctorId(event.target.value); }} aria-label="Choose a clinic"><option value="">Choose a clinic</option>{doctors.map((doctor) => <option key={doctor._id} value={doctor._id}>{doctor.clinicName} · {doctor.name}</option>)}</select></label>}<div className="powered-by"><ShieldCheck size={14} />Private conversation</div></div>
-      {!doctorsLoading && !doctors.length && <div className="assistant-clinic-empty" role="status">No clinics are ready for online bookings yet. Please check again later.</div>}
+      {!doctorsLoading && !doctors.length && <div className="assistant-clinic-empty" role="status">No clinics are ready for online bookings yet. Please check again later. <button type="button" onClick={reloadDoctors}>Retry clinics</button></div>}
       <div className="chat-thread">{messages.length === 0 && <div className="assistant-empty-state"><div className="assistant-empty-mark"><AudioLines size={21} /></div><b>{voiceActive ? "Listening for your question" : doctorMode ? "Test a real clinic conversation" : "Start with what you need"}</b><span>{doctors[0] ? `${doctors[0].clinicName} · ${doctors[0].name}` : "Choose a clinic to begin."} Ask about clinic hours, appointments, or your next step.</span></div>}{messages.map((message, index) => <div className={`message-row ${message.role === "user" ? "message-user" : ""}`} key={`${index}-${message.text.slice(0, 12)}`}>{message.role === "assistant" && <div className="message-avatar"><Sparkles size={13} /></div>}<div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}>{message.transcript && <span className="transcript-label"><AudioLines size={12} />VOICE TRANSCRIPT</span>}{message.text}{!doctorMode && message.role === "assistant" && index === 0 && <button className="assistant-book-card" onClick={onBrowseDoctors}><span className="assistant-book-icon"><CalendarDays size={15} /></span><span><b>Find a doctor & check available times</b><small>Choose a clinic and confirm your visit</small></span><ArrowRight size={15} /></button>}</div>{message.role === "user" && <div className="message-user-avatar"><Users size={14} /></div>}</div>)}{busy && !recording && !speaking && <div className="message-row"><div className="message-avatar"><Sparkles size={13} /></div><div className="message-bubble typing"><i /><i /><i /></div></div>}<div ref={endRef} /></div>
       <div className="chat-composer-wrap"><div className={`voice-banner ${recording ? "voice-recording" : speaking ? "voice-speaking" : ""}`}><div className="voice-state-icon">{voiceActive ? voiceState === "processing" ? <Sparkles size={17} /> : voiceState === "speaking" ? <AudioLines size={17} /> : <Mic size={16} /> : <Mic size={16} />}</div><span>{voiceStatus}</span>{voiceActive && voiceState === "listening" && <div className="voice-waveform" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /></div>}<span className="language-chip">EN · HI</span></div><form className="chat-composer" onSubmit={(event) => { event.preventDefault(); send(); }}><button className={`mic-button ${voiceActive ? "is-recording" : ""}`} type="button" onClick={voiceActive ? stopVoice : startRecording} disabled={!voiceActive && (busy || speaking)} aria-label={voiceActive ? "Stop voice assistant" : "Start voice chat"}>{voiceActive ? <MicOff size={19} /> : <Mic size={19} />}</button><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Ask about finding or booking care…" aria-label="Message your care assistant" disabled={voiceActive} /><button className="send-button" type="submit" disabled={!input.trim() || busy || voiceActive} aria-label="Send message"><Send size={17} /></button></form><div className="composer-caption"><span>Medimind can help with appointments, but isn’t a substitute for emergency care.</span><span>Powered by AI · Private conversation</span></div></div>
     </div>

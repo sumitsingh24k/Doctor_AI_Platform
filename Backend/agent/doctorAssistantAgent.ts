@@ -85,6 +85,70 @@ const DoctorAssistantState = Annotation.Root({
 // round trip for the most common questions (hours, address, specialty).
 const fastAssistantTools = doctorAssistantTools.filter((tool) => tool !== getDoctorClinicDetailsTool);
 
+type ClinicFastFacts = {
+  name?: string;
+  specialization?: string;
+  qualification?: string;
+  clinicName?: string;
+  clinicAddress?: string;
+  clinicOpeningTime?: string;
+  clinicClosingTime?: string;
+  appointmentDurationMinutes?: number;
+  assistantName?: string;
+};
+
+const latestPatientText = (messages: BaseMessage[]) => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message instanceof HumanMessage) return getMessageText(message);
+  }
+  return "";
+};
+
+// These answers come only from the selected clinic's verified profile. They
+// avoid an LLM round trip for the most common receptionist questions while
+// leaving appointment actions and all ambiguous requests on the guarded agent
+// workflow below.
+const getVerifiedClinicFastReply = (message: string, clinic: ClinicFastFacts) => {
+  const text = message.trim().toLowerCase();
+  if (!text) return undefined;
+  const has = (expression: RegExp) => expression.test(text);
+  const isHindi = /[\u0900-\u097F]/u.test(message);
+  const isGreeting = /^(hi|hello|hey|namaste|namaskar|good (morning|afternoon|evening))[!.\s]*$/i.test(text);
+
+  if (isGreeting) {
+    return isHindi
+      ? `\u0928\u092e\u0938\u094d\u0924\u0947, \u092e\u0948\u0902 ${clinic.assistantName?.trim() || "\u0915\u094d\u0932\u093f\u0928\u093f\u0915 \u0938\u0939\u093e\u092f\u0915"} \u0939\u0942\u0901\u0964 \u092e\u0948\u0902 \u0906\u092a\u0915\u0940 \u0915\u0948\u0938\u0947 \u092e\u0926\u0926 \u0915\u0930 \u0938\u0915\u0924\u093e \u0939\u0942\u0901?`
+      : `Hello, I'm ${clinic.assistantName?.trim() || "the clinic assistant"}. How can I help you today?`;
+  }
+  if (has(/\b(hours?|open(?:ing)?|clos(?:e|ing)|timings?|timing)\b|kitne baje|kab khul|kab band|\u0915\u093f\u0924\u0928\u0947 \u092c\u091c\u0947|\u0916\u0941\u0932|\u092c\u0902\u0926/u)) {
+    const opening = clinic.clinicOpeningTime ? formatSpokenTime(clinic.clinicOpeningTime) : undefined;
+    const closing = clinic.clinicClosingTime ? formatSpokenTime(clinic.clinicClosingTime) : undefined;
+    return opening && closing
+      ? isHindi ? `\u0939\u092e\u093e\u0930\u093e \u0915\u094d\u0932\u093f\u0928\u093f\u0915 ${opening} \u0938\u0947 ${closing} \u0924\u0915 \u0916\u0941\u0932\u093e \u0930\u0939\u0924\u093e \u0939\u0948\u0964` : `We're open from ${opening} to ${closing}.`
+      : undefined;
+  }
+  if (has(/\b(address|location|where (?:is|are)|clinic (?:is|location))\b|kaha(?:n|ँ)|kahaan|\u0915\u0939\u093e\u0901|\u092a\u0924\u093e/u)) {
+    return clinic.clinicAddress
+      ? isHindi ? `${clinic.clinicName?.trim() || "\u0915\u094d\u0932\u093f\u0928\u093f\u0915"} ${clinic.clinicAddress} \u092a\u0930 \u0939\u0948\u0964` : `${clinic.clinicName?.trim() || "The clinic"} is at ${clinic.clinicAddress}.`
+      : undefined;
+  }
+  if (has(/\b(appointment|visit|consultation).{0,24}\b(duration|long|minutes?)\b|how long.{0,24}\b(appointment|visit)\b|\u0915\u093f\u0924\u0928\u0947 \u092e\u093f\u0928\u091f/u)) {
+    return clinic.appointmentDurationMinutes
+      ? isHindi ? `\u0939\u0930 \u0905\u092a\u0949\u0907\u0902\u091f\u092e\u0947\u0902\u091f \u0932\u0917\u092d\u0917 ${clinic.appointmentDurationMinutes} \u092e\u093f\u0928\u091f \u0915\u093e \u0939\u094b\u0924\u093e \u0939\u0948\u0964` : `Each appointment lasts about ${clinic.appointmentDurationMinutes} minutes.`
+      : undefined;
+  }
+  if (has(/\b(doctor(?:'?s)? name|who is the doctor|which doctor|special(?:ist|ity)|qualification)\b|\u0921\u0949\u0915\u094d\u091f\u0930|\u0935\u093f\u0936\u0947\u0937\u091c\u094d\u091e/u)) {
+    if (!clinic.name) return undefined;
+    const specialty = clinic.specialization?.trim();
+    const qualification = has(/\bqualification|degree|credential/) ? clinic.qualification?.trim() : undefined;
+    return isHindi
+      ? `\u0921\u0949. ${clinic.name}${specialty ? ` ${specialty} \u0935\u093f\u0936\u0947\u0937\u091c\u094d\u091e \u0939\u0948\u0902` : ""}${qualification ? `, ${qualification}` : ""}\u0964`
+      : `Dr. ${clinic.name}${specialty ? ` is a ${specialty} specialist` : ""}${qualification ? `, with ${qualification}` : ""}.`;
+  }
+  return undefined;
+};
+
 let geminiModel: ReturnType<ChatGoogleGenerativeAI["bindTools"]> | undefined;
 const getGeminiModel = () => {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -231,6 +295,11 @@ const callAgent = async (
     : voiceLanguage === "en-IN"
       ? "\nFor this voice call, reply only in natural Indian English unless the patient asks to change language."
       : "";
+  const fastReply = !state.pendingMutation
+    ? getVerifiedClinicFastReply(latestPatientText(state.messages), clinic)
+    : undefined;
+  if (fastReply) return { messages: [new AIMessage(fastReply)] };
+
   const response = await invokeAssistantModel([
     new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${clinicProfileContext}${assistantIdentity}${welcomeInstruction}${customInstructions}${configuredLanguages}${workflowInstruction}${languageInstruction}${pendingMutationContext}`),
     ...recentMessages,

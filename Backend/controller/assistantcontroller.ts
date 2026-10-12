@@ -94,8 +94,28 @@ const recordAssistantConversation = (input: {
   assistantReply: string;
   latencyMs?: number;
 }) => {
-  void AssistantAuditLog.create(input).catch((error: unknown) => {
-    console.warn("assistant.audit_log.failed", { errorName: error instanceof Error ? error.name : "UnknownError" });
+  const record = {
+    ...input,
+    threadId: input.threadId.trim().slice(0, 128),
+    userMessage: input.userMessage.trim().slice(0, 5_000),
+    assistantReply: input.assistantReply.trim().slice(0, 10_000),
+    ...(typeof input.latencyMs === "number" && Number.isFinite(input.latencyMs)
+      ? { latencyMs: Math.max(0, Math.round(input.latencyMs)) }
+      : {}),
+  };
+  // Required conversation content must be present before writing to MongoDB.
+  // This keeps an unexpected provider empty-output from producing noisy
+  // validation errors or corrupting the admin evaluation data.
+  if (!record.threadId || !record.userMessage || !record.assistantReply) {
+    console.warn("assistant.audit_log.skipped", { reason: "missing_conversation_content" });
+    return;
+  }
+  void AssistantAuditLog.create(record).catch((error: unknown) => {
+    const validation = error as { errors?: Record<string, { message?: string }> };
+    console.warn("assistant.audit_log.failed", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      fields: validation.errors ? Object.keys(validation.errors) : undefined,
+    });
   });
 };
 
@@ -118,7 +138,11 @@ export const invokeAssistant = async (
     ? await runWithAgentContext(options.agentContext, invoke)
     : await invoke();
   const finalMessage = result.messages[result.messages.length - 1];
-  return formatSpokenResponse(getMessageText(finalMessage?.content));
+  const reply = formatSpokenResponse(getMessageText(finalMessage?.content)).trim();
+  // Do not return an empty 200 response: the UI otherwise renders a blank
+  // assistant bubble and the audit schema correctly rejects it. A short
+  // recovery message is safer than pretending a tool action succeeded.
+  return reply || "I couldn't prepare a reply just now. Please repeat your request.";
 };
 
 const resolveRequestAgentContext = async (req: Request): Promise<AgentContext | undefined> => {
