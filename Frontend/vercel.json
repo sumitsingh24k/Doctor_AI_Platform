@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://doctor-ai-platform.onrender.com/api/:path*"
+    }
+  ]
+}
