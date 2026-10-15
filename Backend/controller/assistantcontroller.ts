@@ -7,6 +7,7 @@ import { getBearerToken, verifyAgentToken } from "../lib/tenantContext.js";
 import { verifyAccessToken } from "../lib/auth.js";
 import { formatSpokenResponse } from "../lib/spokenFormatting.js";
 import User from "../modal/userschema.js";
+import Patient from "../modal/patientschema.js";
 import { Doctor } from "../modal/doctordetails.js";
 import { AssistantAuditLog } from "../modal/assistantAuditLog.js";
 import { doctorAssistant } from "../agent/doctorAssistantAgent.js";
@@ -33,6 +34,19 @@ const getMessageText = (content: unknown) => {
       .join("");
   }
   return "";
+};
+
+const getSafeFallbackReply = (message: string) => {
+  const text = message.trim();
+  if (/\b(book|booking|appointment|appoinment|apointment)\b/i.test(text)) {
+    return /\b(today|tomorrow|kal|aaj|\d{1,2}[\/-]\d{1,2})\b/i.test(text)
+      ? "I can help with that appointment. Please choose one of the available times, and I will prepare the booking summary."
+      : "I can help book your appointment. Which day would you prefer?";
+  }
+  if (/\b(available|availability|slot|time|timing|schedule)\b/i.test(text)) {
+    return "I can check clinic availability. Please tell me the date you prefer.";
+  }
+  return "I can help with clinic information or an appointment. What would you like to do?";
 };
 
 const getCookie = (req: Request, name: string) => {
@@ -142,12 +156,13 @@ export const invokeAssistant = async (
   // Do not return an empty 200 response: the UI otherwise renders a blank
   // assistant bubble and the audit schema correctly rejects it. A short
   // recovery message is safer than pretending a tool action succeeded.
-  return reply || "I couldn't prepare a reply just now. Please repeat your request.";
+  return reply || getSafeFallbackReply(message);
 };
 
 const resolveRequestAgentContext = async (req: Request): Promise<AgentContext | undefined> => {
   const token = getBearerToken(req.get("authorization"));
   const requestedDoctorId = typeof req.body?.doctorId === "string" ? req.body.doctorId.trim() : "";
+  let authenticatedPatient: { userId: string; expiresAt: number } | undefined;
   if (token) {
     try {
       const context = verifyAgentToken(token);
@@ -167,6 +182,7 @@ const resolveRequestAgentContext = async (req: Request): Promise<AgentContext | 
         }
         return { doctorId, threadId: getThreadId(req), expiresAt: user.expiresAt };
       }
+      if (user.role === "patient") authenticatedPatient = { userId: user.userId, expiresAt: user.expiresAt };
     }
   }
 
@@ -183,7 +199,29 @@ const resolveRequestAgentContext = async (req: Request): Promise<AgentContext | 
   if (!(await Doctor.exists({ _id: doctorId, setupComplete: true, googleRefreshToken: { $type: "string", $ne: "" } }))) {
     throw Object.assign(new Error("This clinic is not ready for public assistant bookings"), { statusCode: 404 });
   }
-  return { doctorId, threadId: getThreadId(req), expiresAt: Math.floor(Date.now() / 1000) + 3600 };
+  const baseContext: AgentContext = {
+    doctorId,
+    threadId: getThreadId(req),
+    expiresAt: authenticatedPatient?.expiresAt ?? Math.floor(Date.now() / 1000) + 3600,
+  };
+  if (!authenticatedPatient) return baseContext;
+
+  // Only the signed-in patient's profile for the selected clinic may be used.
+  // Never look up a profile by name/phone alone and never expose another
+  // patient's contact information to the model or caller.
+  const [account, patient] = await Promise.all([
+    User.findById(authenticatedPatient.userId).select("name email").lean(),
+    Patient.findOne({ doctorId, userId: authenticatedPatient.userId }).select("name phoneNumber email").lean(),
+  ]);
+  if (!patient?.name || !patient.phoneNumber) return baseContext;
+  return {
+    ...baseContext,
+    patientProfile: {
+      name: patient.name,
+      phoneNumber: patient.phoneNumber,
+      ...(patient.email || account?.email ? { email: patient.email || account?.email } : {}),
+    },
+  };
 };
 
 type VoiceTurnInput = {

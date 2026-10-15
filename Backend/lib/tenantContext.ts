@@ -4,6 +4,11 @@ export type AgentContext = {
   doctorId: string;
   threadId: string;
   expiresAt: number;
+  patientProfile?: {
+    name: string;
+    phoneNumber: string;
+    email?: string | undefined;
+  };
 };
 
 const getSecret = () => {

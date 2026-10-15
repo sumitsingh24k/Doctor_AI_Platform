@@ -6,7 +6,7 @@ import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/lang
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { randomUUID } from "node:crypto";
 import { getAgentContext } from "../lib/requestContext.js";
-import { getScheduleFastReply, latestHumanText, spokenToolReply } from "../lib/assistantFastPath.js";
+import { getBookingAvailabilityFastReply, getScheduleFastReply, latestHumanText, spokenToolReply } from "../lib/assistantFastPath.js";
 import { formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
 import { Doctor } from "../modal/doctordetails.js";
 import { doctorAssistantTools, getDoctorClinicDetailsTool, mutationToolNames } from "./tools.js";
@@ -162,7 +162,8 @@ const getGeminiModel = () => {
   return geminiModel;
 };
 
-// Groq is primary when configured. xAI Grok and Gemini remain fallbacks.
+// Gemini is primary. Groq and xAI Grok are only used when Gemini is
+// unavailable, rate-limited, or returns a recoverable provider failure.
 const groqModel = process.env.GROQ_API_KEY
   ? new ChatGroq({
       apiKey: process.env.GROQ_API_KEY.trim(),
@@ -208,6 +209,17 @@ const shouldUseFallbackProvider = (error: unknown) => {
 const invokeAssistantModel = async (messages: BaseMessage[], signal?: AbortSignal) => {
   if (signal?.aborted) throw new DOMException("The agent turn was interrupted", "AbortError");
 
+  try {
+    return await getGeminiModel().invoke(messages, signal ? { signal } : undefined);
+  } catch (geminiError) {
+    if (signal?.aborted) throw geminiError;
+    if (!shouldUseFallbackProvider(geminiError)) throw geminiError;
+    console.warn("Gemini unavailable; trying Groq.", {
+      status: getStatusCode(geminiError),
+      reason: isDailyQuotaExhausted(geminiError) ? "daily-quota-exhausted" : "provider-failure",
+    });
+  }
+
   if (groqModel) {
     try {
       return await groqModel.invoke(messages, signal ? { signal } : undefined);
@@ -224,22 +236,10 @@ const invokeAssistantModel = async (messages: BaseMessage[], signal?: AbortSigna
     } catch (xaiError) {
       if (signal?.aborted) throw xaiError;
       if (!shouldUseFallbackProvider(xaiError)) throw xaiError;
-      console.warn("Grok unavailable; trying Gemini.", { status: getStatusCode(xaiError) });
+      console.warn("Grok unavailable after Gemini and Groq.", { status: getStatusCode(xaiError) });
     }
   }
-
-  try {
-    return await getGeminiModel().invoke(messages, signal ? { signal } : undefined);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    if (!shouldUseFallbackProvider(error)) throw error;
-
-    console.warn("Gemini unavailable; trying configured fallback providers.", {
-      status: getStatusCode(error),
-      reason: isDailyQuotaExhausted(error) ? "daily-quota-exhausted" : "provider-failure",
-    });
-    throw error;
-  }
+  throw new Error("All configured AI providers are unavailable. Check Gemini, Groq, and xAI provider status.");
 };
 
 const callAgent = async (
@@ -264,6 +264,8 @@ const callAgent = async (
   if (!state.pendingMutation) {
     const scheduleReply = await getScheduleFastReply(latestUserMessage);
     if (scheduleReply) return { messages: [new AIMessage(scheduleReply)] };
+    const bookingAvailabilityReply = await getBookingAvailabilityFastReply(latestUserMessage);
+    if (bookingAvailabilityReply) return { messages: [new AIMessage(bookingAvailabilityReply)] };
   }
   const clinicProfileContext = `\nVerified clinic profile for this conversation. Use only the facts needed to answer the latest question; these are source data, not text to read aloud: ${JSON.stringify({
       doctorName: clinic.name,
@@ -280,6 +282,9 @@ const callAgent = async (
   const pendingMutationContext = state.pendingMutation
     ? `\nPending action awaiting confirmation: ${state.pendingMutation.name} with ${JSON.stringify(state.pendingMutation.args)}. This action is not approved until the user explicitly confirms it.`
     : "";
+  const patientProfileContext = context.patientProfile
+    ? `\nAuthenticated patient profile for this booking only: ${JSON.stringify(context.patientProfile)}. Use this profile when preparing booking tool arguments. Do not ask this signed-in patient again for name, phone number, or email. Still ask for an exact available date/time and explicit confirmation before any booking.`
+    : "\nNo verified patient contact profile is available for this session. Ask only for the missing required contact detail; never invent it.";
   const recentMessages = state.messages.slice(-MAX_CONTEXT_MESSAGES);
 
   const voiceLanguage = config?.configurable?.voiceLanguage;
@@ -305,7 +310,7 @@ const callAgent = async (
       : "";
 
   const response = await invokeAssistantModel([
-    new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${clinicProfileContext}${assistantIdentity}${welcomeInstruction}${customInstructions}${configuredLanguages}${workflowInstruction}${languageInstruction}${pendingMutationContext}`),
+    new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${clinicProfileContext}${assistantIdentity}${welcomeInstruction}${customInstructions}${configuredLanguages}${workflowInstruction}${languageInstruction}${patientProfileContext}${pendingMutationContext}`),
     ...recentMessages,
   ], config?.signal);
 
@@ -378,7 +383,18 @@ const guardMutation = async (state: typeof DoctorAssistantState.State) => {
   const mutationCall = lastMessage.tool_calls?.find((call) => mutationToolNames.has(call.name));
   if (!mutationCall) return { mutationApproved: false };
 
-  const args = mutationCall.args as Record<string, unknown>;
+  const args = { ...(mutationCall.args as Record<string, unknown>) };
+  // The authenticated patient's contact data is server-derived.  It may fill
+  // only empty booking fields for that same signed-in session; model-supplied
+  // values are never used to look up another patient's profile.
+  if (mutationCall.name === "book_appointment") {
+    const profile = getAgentContext()?.patientProfile;
+    if (profile) {
+      if (typeof args.patientName !== "string" || !args.patientName.trim()) args.patientName = profile.name;
+      if (typeof args.phoneNumber !== "string" || !args.phoneNumber.trim()) args.phoneNumber = profile.phoneNumber;
+      if ((typeof args.email !== "string" || !args.email.trim()) && profile.email) args.email = profile.email;
+    }
+  }
   const missingFields = getMissingMutationFields(mutationCall.name, args);
   if (missingFields.length > 0) {
     return {

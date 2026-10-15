@@ -97,6 +97,19 @@ export const getScheduleFastReply = async (message: string) => {
   return formatScheduleSpeech(result, message);
 };
 
+// A request such as "I want to book tomorrow" is common in both text and
+// voice. It contains a date but is intentionally excluded from the generic
+// schedule lookup above. Resolve it from the live calendar before asking an
+// LLM so a provider outage never turns this simple request into a blank reply.
+export const getBookingAvailabilityFastReply = async (message: string) => {
+  const text = message.trim();
+  if (!/\b(book|booking|appointment|appoinment|apointment|\u092c\u0941\u0915)\b/i.test(text)) return undefined;
+  const date = normalizeAppointmentDate(text);
+  if (!date) return undefined;
+  const result = await getAvailableAppointmentRange(date, 1);
+  return formatScheduleSpeech(result, message);
+};
+
 const formatMutationSpeech = (name: string, content: string) => {
   try {
     const payload = JSON.parse(content) as {
