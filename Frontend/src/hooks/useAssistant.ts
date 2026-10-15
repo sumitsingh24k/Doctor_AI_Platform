@@ -8,7 +8,7 @@ export type VoiceState = "idle" | "listening" | "processing" | "speaking" | "int
 const SILENCE_TO_COMMIT_MS = 900;
 const SILENCE_PROMPT_DELAY_MS = 10_000;
 const SPEECH_START_FRAMES = 2;
-const TTS_FAST_FALLBACK_DELAY_MS = 1_250;
+const TTS_FAST_FALLBACK_DELAY_MS = 2_200;
 // Sarvam's synchronous STT endpoint is intended for short interactive turns;
 // keep uploads below its request timeout to avoid upstream 499s.
 const MAX_TURN_MS = 10_000;
@@ -58,6 +58,11 @@ export function useAssistant(setError: (message: string) => void) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [threadId, setThreadId] = useState("");
+  // Voice recognition callbacks outlive a React render. Keep the newest
+  // server-issued thread here so every spoken follow-up (especially
+  // "Yes, confirm") continues the pending booking rather than opening a new
+  // conversation.
+  const threadIdRef = useRef("");
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState(true);
   const [selectedDoctorId, setSelectedDoctorId] = useState("");
@@ -160,6 +165,7 @@ export function useAssistant(setError: (message: string) => void) {
         body: JSON.stringify({ message, ...(selectedDoctorId ? { doctorId: selectedDoctorId } : {}), ...(threadId ? { threadId } : {}) }),
       });
       if (requestId !== turnId.current) return;
+      threadIdRef.current = result.threadId;
       setThreadId(result.threadId);
       setMessages((current) => [...current, { role: "assistant", text: result.reply }]);
     } catch (reason) {
@@ -239,6 +245,7 @@ export function useAssistant(setError: (message: string) => void) {
         body: JSON.stringify({ message, ...(doctorId ? { doctorId } : {}), ...(conversationThreadId ? { threadId: conversationThreadId } : {}) }),
       });
       if (requestId !== turnId.current || !voiceActiveRef.current) return;
+      threadIdRef.current = result.threadId;
       setThreadId(result.threadId);
       latestAssistantReply.current = result.reply;
       setMessages((current) => [...current, { role: "assistant", text: result.reply }]);
@@ -307,7 +314,7 @@ export function useAssistant(setError: (message: string) => void) {
             recognition.stop();
             const completedTranscript = finalTranscript;
             finalTranscript = "";
-            void submitLiveTranscript(completedTranscript, doctorId, conversationThreadId);
+            void submitLiveTranscript(completedTranscript, doctorId, threadIdRef.current || conversationThreadId);
           }
         };
         recognition.onerror = (event) => {
@@ -580,7 +587,7 @@ export function useAssistant(setError: (message: string) => void) {
           } else if (payload.type === "transcript" && payload.transcript) {
             setMessages((current) => [...current, { role: "user", text: payload.transcript!, transcript: true }]);
           } else if (payload.type === "assistant_reply") {
-            if (payload.threadId) { sessionThreadId = payload.threadId; setThreadId(payload.threadId); }
+            if (payload.threadId) { sessionThreadId = payload.threadId; threadIdRef.current = payload.threadId; setThreadId(payload.threadId); }
             if (payload.reply) {
               latestAssistantReply.current = payload.reply;
               setMessages((current) => [...current, { role: "assistant", text: payload.reply! }]);
@@ -688,6 +695,7 @@ export function useAssistant(setError: (message: string) => void) {
   const openVoiceConversation = useCallback((doctor: Doctor) => {
     stop();
     setSelectedDoctorId(doctor._id);
+    threadIdRef.current = "";
     setThreadId("");
     setMessages([]);
     setInput("");
@@ -699,6 +707,7 @@ export function useAssistant(setError: (message: string) => void) {
     turnId.current += 1;
     setMessages([]);
     setInput("");
+    threadIdRef.current = "";
     setThreadId("");
     setSelectedDoctorId(doctors.length === 1 && doctors[0] ? doctors[0]._id : "");
   }, [doctors, stop]);

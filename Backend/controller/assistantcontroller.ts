@@ -236,7 +236,8 @@ export const processVoiceTurn = async ({ audio, mimeType, languageCode, threadId
   onProgress?.({ type: "assistant_reply", threadId: safeThreadId, reply });
   let speech: Awaited<ReturnType<typeof synthesizeSpeech>>;
   try {
-    speech = await synthesizeSpeech(reply, getTtsLanguageCode(detectedLanguage), signal);
+    const ttsLanguage = /[\u0900-\u097F]/u.test(reply) ? "hi-IN" : getTtsLanguageCode(detectedLanguage);
+    speech = await synthesizeSpeech(reply, ttsLanguage, signal);
     throwIfCancelled();
   } catch (error) {
     throwIfCancelled();

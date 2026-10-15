@@ -1,7 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { searchDoctorKnowledgeForAssistant } from "../controller/knowledgecontroller.js";
-import { getAvailableAppointmentWeek } from "../services/appointment.service.js";
+import { getAvailableAppointmentRange } from "../services/appointment.service.js";
 import {
   bookAppointment,
   cancelAppointment,
@@ -86,15 +86,17 @@ export const searchDoctorKnowledgeTool = tool(
 );
 
 export const getAvailableSlotsTool = tool(
-  async ({ date }) => {
-    const result = await getAvailableAppointmentWeek(date);
+  async ({ date, days }) => {
+    const result = await getAvailableAppointmentRange(date, days ?? 1);
     return JSON.stringify({
       from: result.from,
       through: result.through,
       appointmentDurationMinutes: result.appointmentDurationMinutes,
       clinicLocalTimeZoneName: getSpokenTimeZoneName(result.timeZone),
-      days: result.days.map(({ date: slotDate, slots }) => ({
+      days: result.days.map(({ date: slotDate, slots, bookedCount, bookedTimes }) => ({
         date: slotDate,
+        bookedCount,
+        bookedTimes: bookedTimes.map((time) => formatSpokenTime(time)),
         slots: slots.map((slot) => formatSpokenTime(slot)),
       })),
       suggestedSlots: result.suggestedSlots.map(({ date: slotDate, time }) => ({
@@ -106,9 +108,10 @@ export const getAvailableSlotsTool = tool(
   {
     name: "get_available_appointment_slots",
     description:
-      "Get genuinely available appointment slots for a rolling seven-day window. If the patient gives a date, start from that date; otherwise start from today. Times are formatted for speech in the clinic's local time. Offer only a few relevant returned slots, never dump the full result or invent slots. Use a human-readable timezone name only if the patient asks.",
+      "Get booked appointment counts and genuinely available open slots. Default to one day: the date the patient named, or today. Use days=7 only when they ask about the week. Offer only a few open slots. Never invent slots or speak other patients' names. Hindi words like kal and aaj are valid dates.",
     schema: z.object({
-      date: z.string().optional().transform((value) => value ? normalizeAppointmentDate(value) : undefined).refine((value) => !value || /^\d{4}-\d{2}-\d{2}$/.test(value), "Please provide a valid appointment date, for example 15 September or tomorrow"),
+      date: z.string().optional().transform((value) => value ? normalizeAppointmentDate(value) : undefined).refine((value) => !value || /^\d{4}-\d{2}-\d{2}$/.test(value), "Please provide a valid appointment date, for example 15 September, tomorrow, or kal"),
+      days: z.coerce.number().int().min(1).max(7).optional().describe("Number of days to check, starting from date. Use 1 unless the patient asked about the week."),
     }),
   }
 );

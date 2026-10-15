@@ -326,70 +326,27 @@ export const checkClinicWorkingHours = (
   };
 };
 
-export const getAvailableCalendarSlots = async ({
-  doctor,
-  appointmentDate,
-  durationMinutes = doctor.appointmentDurationMinutes || 30,
-}: {
-  doctor: Awaited<ReturnType<typeof findConnectedDoctor>>;
-  appointmentDate: string;
-  durationMinutes?: number;
-}) => {
-  if (!doctor.clinicOpeningTime || !doctor.clinicClosingTime) {
-    return [];
-  }
-
-  const openingMinutes = parseClockTime(
-    doctor.clinicOpeningTime,
-    "Clinic opening time"
-  );
-  const closingMinutes = parseClockTime(
-    doctor.clinicClosingTime,
-    "Clinic closing time"
-  );
-  const timeZone = doctor.clinicTimeZone || DEFAULT_TIME_ZONE;
-  const slots: string[] = [];
-
-  for (
-    let minutes = openingMinutes;
-    minutes + durationMinutes <= closingMinutes;
-    minutes += durationMinutes
-  ) {
-    const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
-    const slotMinutes = (minutes % 60).toString().padStart(2, "0");
-    const appointmentTime = `${hours}:${slotMinutes}`;
-    const { start, end } = buildAppointmentWindow(
-      appointmentDate,
-      appointmentTime,
-      durationMinutes,
-      timeZone
-    );
-
-    if (start <= new Date()) {
-      continue;
-    }
-
-    const availability = await checkDoctorCalendarAvailability(
-      doctor,
-      start,
-      end,
-      timeZone
-    );
-
-    if (availability.isAvailable) {
-      slots.push(appointmentTime);
-    }
-  }
-
-  return slots;
+const formatClockFromMinutes = (minutes: number) => {
+  const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
+  const slotMinutes = (minutes % 60).toString().padStart(2, "0");
+  return `${hours}:${slotMinutes}`;
 };
 
-export const checkDoctorCalendarAvailability = async (
+const busyRangesOverlap = (
+  start: Date,
+  end: Date,
+  busySlots: Array<{ start?: string | null; end?: string | null }>
+) =>
+  busySlots.some((slot) => {
+    if (!slot.start || !slot.end) return false;
+    return start < new Date(slot.end) && end > new Date(slot.start);
+  });
+
+const queryCalendarBusy = async (
   doctor: Awaited<ReturnType<typeof findConnectedDoctor>>,
   start: Date,
   end: Date,
-  timeZone = DEFAULT_TIME_ZONE,
-  excludeEventId?: string
+  timeZone: string
 ) => {
   const oauth2Client = getGoogleOAuthClient();
   oauth2Client.setCredentials({
@@ -398,7 +355,6 @@ export const checkDoctorCalendarAvailability = async (
 
   const calendar = google.calendar({ version: "v3", auth: oauth2Client });
   const calendarId = doctor.googleCalendarId || "primary";
-
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: start.toISOString(),
@@ -408,7 +364,98 @@ export const checkDoctorCalendarAvailability = async (
     },
   });
 
-  let busySlots = response.data.calendars?.[calendarId]?.busy || [];
+  return {
+    calendar,
+    calendarId,
+    busySlots: response.data.calendars?.[calendarId]?.busy || [],
+  };
+};
+
+export const getAvailableCalendarSlotsForDates = async ({
+  doctor,
+  dates,
+  durationMinutes = doctor.appointmentDurationMinutes || 30,
+}: {
+  doctor: Awaited<ReturnType<typeof findConnectedDoctor>>;
+  dates: string[];
+  durationMinutes?: number;
+}) => {
+  if (!doctor.clinicOpeningTime || !doctor.clinicClosingTime || dates.length === 0) {
+    return dates.map((date) => ({ date, slots: [] as string[] }));
+  }
+
+  const openingMinutes = parseClockTime(doctor.clinicOpeningTime, "Clinic opening time");
+  const closingMinutes = parseClockTime(doctor.clinicClosingTime, "Clinic closing time");
+  const timeZone = doctor.clinicTimeZone || DEFAULT_TIME_ZONE;
+  const firstDate = dates[0];
+  const lastDate = dates[dates.length - 1];
+  if (!firstDate || !lastDate) return dates.map((date) => ({ date, slots: [] as string[] }));
+
+  const { start: rangeStart } = buildAppointmentWindow(
+    firstDate,
+    formatClockFromMinutes(openingMinutes),
+    durationMinutes,
+    timeZone
+  );
+  const { start: lastDayOpen } = buildAppointmentWindow(
+    lastDate,
+    formatClockFromMinutes(openingMinutes),
+    durationMinutes,
+    timeZone
+  );
+  const rangeEnd = new Date(lastDayOpen.getTime() + (closingMinutes - openingMinutes) * 60_000);
+  const now = new Date();
+  const busySlots = rangeStart >= rangeEnd
+    ? []
+    : (await queryCalendarBusy(doctor, rangeStart < now ? now : rangeStart, rangeEnd, timeZone)).busySlots;
+
+  return dates.map((date) => {
+    const slots: string[] = [];
+    for (
+      let minutes = openingMinutes;
+      minutes + durationMinutes <= closingMinutes;
+      minutes += durationMinutes
+    ) {
+      const appointmentTime = formatClockFromMinutes(minutes);
+      const { start, end } = buildAppointmentWindow(date, appointmentTime, durationMinutes, timeZone);
+      if (start <= now) continue;
+      if (!busyRangesOverlap(start, end, busySlots)) slots.push(appointmentTime);
+    }
+    return { date, slots };
+  });
+};
+
+export const getAvailableCalendarSlots = async ({
+  doctor,
+  appointmentDate,
+  durationMinutes = doctor.appointmentDurationMinutes || 30,
+}: {
+  doctor: Awaited<ReturnType<typeof findConnectedDoctor>>;
+  appointmentDate: string;
+  durationMinutes?: number;
+}) => {
+  const [day] = await getAvailableCalendarSlotsForDates({
+    doctor,
+    dates: [appointmentDate],
+    durationMinutes,
+  });
+  return day?.slots ?? [];
+};
+
+export const checkDoctorCalendarAvailability = async (
+  doctor: Awaited<ReturnType<typeof findConnectedDoctor>>,
+  start: Date,
+  end: Date,
+  timeZone = DEFAULT_TIME_ZONE,
+  excludeEventId?: string
+) => {
+  const { calendar, calendarId, busySlots: queriedBusy } = await queryCalendarBusy(
+    doctor,
+    start,
+    end,
+    timeZone
+  );
+  let busySlots = queriedBusy;
 
   if (excludeEventId && busySlots.length > 0) {
     const events = await calendar.events.list({

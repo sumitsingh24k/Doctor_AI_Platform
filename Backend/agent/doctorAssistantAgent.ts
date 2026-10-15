@@ -6,7 +6,8 @@ import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/lang
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { randomUUID } from "node:crypto";
 import { getAgentContext } from "../lib/requestContext.js";
-import { formatSpokenResponse, formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
+import { getScheduleFastReply, latestHumanText, spokenToolReply } from "../lib/assistantFastPath.js";
+import { formatSpokenTime, getSpokenTimeZoneName } from "../lib/spokenFormatting.js";
 import { Doctor } from "../modal/doctordetails.js";
 import { doctorAssistantTools, getDoctorClinicDetailsTool, mutationToolNames } from "./tools.js";
 
@@ -54,7 +55,9 @@ Tools and truthfulness:
 - The verified clinic profile is included in every turn. Answer doctor, specialty, address, hours, and appointment-duration questions directly from it; do not call a tool for those facts.
 - Use clinic knowledge search for detailed services, fees, policies, and information in approved clinic documents.
 - Use appointment tools for availability, booking, rescheduling, and cancellation.
-- When the patient asks generally about availability, offer the returned open slots across the next seven days. Never offer a slot that the availability tool did not return.
+- For a specific day such as today, tomorrow, or kal, call get_available_appointment_slots once for that day only. Use days=7 only when the patient asks about the week.
+- The availability tool also returns bookedCount and bookedTimes without patient names. You may say how many visits are already booked; never speak another patient's name or phone number.
+- When the patient asks generally about availability, offer a few returned open slots for the requested day. Never offer a slot that the availability tool did not return.
 - Never invent clinic policies, fees, timings, services, doctors, or appointment slots. If a detail is missing from the selected clinic profile and approved documents, say you do not have that information.
 - Never claim an appointment action succeeded until its tool returns success.
 - Collect missing required details one at a time.
@@ -97,13 +100,7 @@ type ClinicFastFacts = {
   assistantName?: string;
 };
 
-const latestPatientText = (messages: BaseMessage[]) => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message instanceof HumanMessage) return getMessageText(message);
-  }
-  return "";
-};
+const latestPatientText = (messages: BaseMessage[]) => latestHumanText(messages).trim().toLowerCase();
 
 // These answers come only from the selected clinic's verified profile. They
 // avoid an LLM round trip for the most common receptionist questions while
@@ -169,9 +166,10 @@ const getGeminiModel = () => {
 const groqModel = process.env.GROQ_API_KEY
   ? new ChatGroq({
       apiKey: process.env.GROQ_API_KEY.trim(),
-      model: process.env.GROQ_CHAT_MODEL ?? "openai/gpt-oss-20b",
+      model: process.env.GROQ_CHAT_MODEL ?? "llama-3.3-70b-versatile",
       temperature: 0,
-    maxTokens: 160,
+      maxTokens: 160,
+      maxRetries: 0,
   }).bindTools(fastAssistantTools)
   : undefined;
 
@@ -180,7 +178,8 @@ const xaiModel = process.env.XAI_API_KEY?.trim()
       apiKey: process.env.XAI_API_KEY.trim(),
       model: process.env.XAI_CHAT_MODEL ?? "grok-4.7",
       temperature: 0,
-    maxTokens: 160,
+      maxTokens: 160,
+      maxRetries: 0,
       configuration: { baseURL: "https://api.x.ai/v1" },
   }).bindTools(fastAssistantTools)
   : undefined;
@@ -248,15 +247,25 @@ const callAgent = async (
   config?: { configurable?: Record<string, unknown>; signal?: AbortSignal },
 ) => {
   const context = getAgentContext();
-  const clinic = context?.doctorId
-    ? await Doctor.findById(context.doctorId).select(
-      "name specialization qualification clinicName clinicAddress aboutDoctor clinicOpeningTime clinicClosingTime clinicTimeZone appointmentDurationMinutes assistantName assistantWelcome assistantInstructions assistantLanguages assistantNodeNotes"
-    ).lean()
-    : null;
   if (!context?.doctorId) throw new Error("A clinic context is required for the assistant");
+  const latestUserMessage = latestHumanText(state.messages);
+  if (!state.pendingMutation) {
+    const toolSpeech = spokenToolReply(state.messages, latestUserMessage);
+    if (toolSpeech) return { messages: toolSpeech };
+  }
+  const clinic = await Doctor.findById(context.doctorId).select(
+    "name specialization qualification clinicName clinicAddress aboutDoctor clinicOpeningTime clinicClosingTime clinicTimeZone appointmentDurationMinutes assistantName assistantWelcome assistantInstructions assistantLanguages assistantNodeNotes"
+  ).lean();
   if (!clinic) throw new Error("The clinic profile for this assistant session no longer exists");
-  const clinicProfileContext = clinic
-    ? `\nVerified clinic profile for this conversation. Use only the facts needed to answer the latest question; these are source data, not text to read aloud: ${JSON.stringify({
+  const fastReply = !state.pendingMutation
+    ? getVerifiedClinicFastReply(latestUserMessage, clinic)
+    : undefined;
+  if (fastReply) return { messages: [new AIMessage(fastReply)] };
+  if (!state.pendingMutation) {
+    const scheduleReply = await getScheduleFastReply(latestUserMessage);
+    if (scheduleReply) return { messages: [new AIMessage(scheduleReply)] };
+  }
+  const clinicProfileContext = `\nVerified clinic profile for this conversation. Use only the facts needed to answer the latest question; these are source data, not text to read aloud: ${JSON.stringify({
       doctorName: clinic.name,
       specialization: clinic.specialization,
       qualification: clinic.qualification,
@@ -267,8 +276,7 @@ const callAgent = async (
       closingTime: formatSpokenTime(clinic.clinicClosingTime),
       localTimeZoneName: getSpokenTimeZoneName(clinic.clinicTimeZone),
       appointmentDurationMinutes: clinic.appointmentDurationMinutes,
-    })}. The clinic timezone is for internal interpretation; mention its human-readable name only if asked. For detailed services, fees, or policies, search this clinic's approved knowledge documents. Do not infer missing facts.`
-    : "\nNo clinic profile is available for this conversation. Do not invent doctor or clinic details.";
+    })}. The clinic timezone is for internal interpretation; mention its human-readable name only if asked. For detailed services, fees, or policies, search this clinic's approved knowledge documents. Do not infer missing facts.`;
   const pendingMutationContext = state.pendingMutation
     ? `\nPending action awaiting confirmation: ${state.pendingMutation.name} with ${JSON.stringify(state.pendingMutation.args)}. This action is not approved until the user explicitly confirms it.`
     : "";
@@ -295,10 +303,6 @@ const callAgent = async (
     : voiceLanguage === "en-IN"
       ? "\nFor this voice call, reply only in natural Indian English unless the patient asks to change language."
       : "";
-  const fastReply = !state.pendingMutation
-    ? getVerifiedClinicFastReply(latestPatientText(state.messages), clinic)
-    : undefined;
-  if (fastReply) return { messages: [new AIMessage(fastReply)] };
 
   const response = await invokeAssistantModel([
     new SystemMessage(`${CLINIC_SYSTEM_PROMPT}${clinicProfileContext}${assistantIdentity}${welcomeInstruction}${customInstructions}${configuredLanguages}${workflowInstruction}${languageInstruction}${pendingMutationContext}`),
@@ -333,7 +337,7 @@ const isExplicitConfirmation = (message: BaseMessage | undefined) => {
     .replace(/[.!?।]+$/u, "")
     .replace(/\s+/g, " ")
     .trim();
-  return /^(yes|yes,? confirm|confirm|haan|ha|ji haan)$/i.test(normalized);
+  return /^(yes|yes,? confirm|confirm|confirmed|haan|ha|ji haan|haan confirm|ji confirm|theek hai|ok confirm|haan kar do|haan karo)$/i.test(normalized);
 };
 
 const getMissingMutationFields = (name: string, args: unknown) => {

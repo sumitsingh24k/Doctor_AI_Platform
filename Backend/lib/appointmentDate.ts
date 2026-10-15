@@ -25,9 +25,15 @@ const parseNumericDate = (input: string) => {
     : formatDate(year, second, first);
 };
 
+const withSpokenHindiDates = (input: string) =>
+  input
+    .replace(/(^|[^\p{L}\p{M}])(parso|parson|परसों|परसो)(?=$|[^\p{L}\p{M}])/giu, "$1day after tomorrow")
+    .replace(/(^|[^\p{L}\p{M}])(kal|कल)(?=$|[^\p{L}\p{M}])/giu, "$1tomorrow")
+    .replace(/(^|[^\p{L}\p{M}])(aaj|आज)(?=$|[^\p{L}\p{M}])/giu, "$1today");
+
 export const normalizeAppointmentDate = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
-  const input = value.trim().replace(/\s+/g, " ");
+  const input = withSpokenHindiDates(value.trim().replace(/\s+/g, " "));
   if (!input) return undefined;
 
   const numericDate = parseNumericDate(input);
