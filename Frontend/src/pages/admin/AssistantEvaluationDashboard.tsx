@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "../../api";
 
@@ -9,9 +9,30 @@ type Conversation = { _id: string; threadId: string; channel: "text" | "voice"; 
 type LiveFinding = { threadId: string; severity: "warning" | "review"; type: string; evidence: string; recommendation: string; createdAt: string };
 type ActionAudit = { _id: string; threadId: string; action: "book" | "reschedule" | "cancel"; outcome: "succeeded" | "failed"; appointmentId?: string | null; errorCode?: number | null; errorMessage?: string; createdAt: string };
 type LiveAnalysis = { analysedConversations: number; actionAudits: ActionAudit[]; findings: LiveFinding[]; limitation: string };
-type ConversationDetail = { threadId: string; conversations: Conversation[]; actionAudits: ActionAudit[]; findings: LiveFinding[]; explanation: { summary: string; checks: string[]; outcome: string; averageLatencyMs: number; boundary: string } };
+type ConversationDetail = { threadId: string; conversations: Conversation[]; actionAudits: ActionAudit[]; findings: LiveFinding[]; explanation: { summary: string; checks: string[]; outcome: string; averageLatencyMs: number; changesApplied?: string[]; boundary: string } };
 
 const mockState = (result: Result) => `Mock tool state: booking=${String(result.mockState.bookingCreated)}, tool called=${String(result.mockState.toolCalled)}`;
+
+const cachedConversationDetail = (selected: Conversation, allConversations: Conversation[], analysis: LiveAnalysis | null): ConversationDetail => {
+  const conversations = allConversations.filter((item) => item.threadId === selected.threadId);
+  const threadConversations = conversations.length ? conversations : [selected];
+  const actionAudits = analysis?.actionAudits.filter((item) => item.threadId === selected.threadId) ?? [];
+  const findings = analysis?.findings.filter((item) => item.threadId === selected.threadId) ?? [];
+  const averageLatencyMs = Math.round(threadConversations.reduce((total, item) => total + (item.latencyMs ?? 0), 0) / threadConversations.length);
+  return {
+    threadId: selected.threadId,
+    conversations: threadConversations,
+    actionAudits,
+    findings,
+    explanation: {
+      summary: findings.length ? `${findings.length} issue${findings.length === 1 ? "" : "s"} detected in the currently loaded analysis.` : "No issue was detected in the currently loaded analysis. The detailed server analysis is loading next.",
+      checks: ["Confirmation and booking-success claims", "Actual appointment action audit", "Privacy-risk wording", "Slow response and recovery reply"],
+      outcome: actionAudits.some((item) => item.outcome === "succeeded") ? "A completed appointment-tool action is present in the currently loaded audit." : "No completed appointment-tool action is present in the currently loaded audit.",
+      averageLatencyMs,
+      boundary: "Cached client analysis is shown immediately. The complete server transcript and detailed evidence replace it when available.",
+    },
+  };
+};
 
 export function AssistantEvaluationDashboard() {
   const [report, setReport] = useState<Report | null>(null);
@@ -20,9 +41,11 @@ export function AssistantEvaluationDashboard() {
   const [selectedDetail, setSelectedDetail] = useState<ConversationDetail | null>(null);
   const [selectedThread, setSelectedThread] = useState("");
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailNotice, setDetailNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const detailRef = useRef<HTMLElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -37,6 +60,9 @@ export function AssistantEvaluationDashboard() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (selectedDetail) detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selectedDetail]);
 
   const run = async () => {
     setRunning(true); setError("");
@@ -45,11 +71,11 @@ export function AssistantEvaluationDashboard() {
     finally { setRunning(false); }
   };
 
-  const openConversation = async (threadId: string) => {
-    if (selectedThread === threadId && selectedDetail) return;
-    setSelectedThread(threadId); setSelectedDetail(null); setLoadingDetail(true); setError("");
-    try { setSelectedDetail(await api<ConversationDetail>(`/api/admin/assistant-conversations/${encodeURIComponent(threadId)}`)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load this conversation analysis."); }
+  const openConversation = async (item: Conversation) => {
+    if (selectedThread === item.threadId && selectedDetail) return;
+    setSelectedThread(item.threadId); setDetailNotice(""); setSelectedDetail(cachedConversationDetail(item, conversations, liveAnalysis)); setLoadingDetail(true); setError("");
+    try { setSelectedDetail(await api<ConversationDetail>(`/api/admin/assistant-conversations/${encodeURIComponent(item.threadId)}`)); }
+    catch { setDetailNotice("The detailed server endpoint is unavailable in this deployment, so the cached transcript and current analysis are shown below. Deploy the backend update to enable the complete thread lookup."); }
     finally { setLoadingDetail(false); }
   };
 
@@ -65,8 +91,8 @@ export function AssistantEvaluationDashboard() {
       <section className="panel"><div className="admin-section-heading"><div><ShieldCheck size={18}/><h2>Live conversation analysis</h2></div><span>{liveAnalysis?.analysedConversations ?? 0} conversations analysed</span></div><p className="muted">Automatically checks real recorded text and voice chats for confirmation loops, booking claims before visible confirmation, privacy-risk wording, and slow replies.</p>{liveAnalysis?.findings.length ? <div className="admin-live-findings">{liveAnalysis.findings.map((finding, index) => <article className={finding.severity === "warning" ? "admin-result fail" : "admin-result"} key={`${finding.threadId}-${finding.type}-${index}`}><div>{finding.severity === "warning" ? <AlertTriangle size={16}/> : <ShieldCheck size={16}/>}<b>{finding.type.replace(/_/g, " ")}</b></div><span>{finding.evidence}</span><small>Recommendation: {finding.recommendation}</small></article>)}</div> : <p className="admin-analysis-clear"><CheckCircle2 size={16}/>No review signals found in the recorded conversations.</p>}<p className="muted">{liveAnalysis?.limitation}</p></section>
       <section className="panel"><h2>Actual appointment tool outcomes</h2><p className="muted">Recorded from the booking/reschedule/cancellation tool and database layer, not inferred from chat text.</p>{liveAnalysis?.actionAudits.length ? <div className="admin-live-findings">{liveAnalysis.actionAudits.slice(0, 30).map((action) => <article className={action.outcome === "succeeded" ? "admin-result pass" : "admin-result fail"} key={action._id}><div>{action.outcome === "succeeded" ? <CheckCircle2 size={16}/> : <AlertTriangle size={16}/>}<b>{action.action} {action.outcome}</b></div><span>Thread: {action.threadId}{action.appointmentId ? ` | Appointment: ${action.appointmentId}` : ""}</span><small>{action.outcome === "failed" ? `Error ${action.errorCode ?? ""}: ${action.errorMessage ?? "Unknown error"}` : "Database-backed action completed."}</small></article>)}</div> : <p className="muted">No assistant-triggered appointment actions have been recorded yet.</p>}</section>
       <section className="panel"><h2>Hard-case results</h2><p className="muted">Each result checks the reply and actual mock tool state. A transcript alone cannot prove that a booking was created.</p><div className="admin-results">{report.after.results.map((result) => <article key={result.id} className={result.passed ? "admin-result pass" : "admin-result fail"}><div>{result.passed ? <CheckCircle2 size={16}/> : <AlertTriangle size={16}/>}<b>{result.title}</b></div><span>{result.reply}</span><small>{mockState(result)}</small></article>)}</div></section>
-      <section className="panel"><h2>Previous assistant chats</h2><p className="muted">Click a chat to open the complete thread, detected issue, why it was flagged, recommended fix, and actual appointment-tool outcome.</p>{conversations.length ? <div className="admin-conversations">{conversations.map((item) => <button type="button" className={selectedThread === item.threadId ? "admin-conversation-button selected" : "admin-conversation-button"} key={item._id} onClick={() => void openConversation(item.threadId)}><small>{item.channel} | {new Date(item.createdAt).toLocaleString()}</small><b>Patient: {item.userMessage}</b><span>Assistant: {item.assistantReply}</span><em>Open explanation <ChevronRight size={14}/></em></button>)}</div> : <p className="muted">No assistant conversations have been recorded yet.</p>}</section>
-      {selectedThread && <section className="panel admin-conversation-detail"><div className="admin-section-heading"><div><ShieldCheck size={18}/><h2>Conversation explanation</h2></div><span>Thread: {selectedThread}</span></div>{loadingDetail ? <p className="muted">Loading conversation evidence...</p> : selectedDetail && <><p className="muted">{selectedDetail.explanation.summary}</p><div className="admin-detail-grid"><article><b>What was checked</b><ul>{selectedDetail.explanation.checks.map((check) => <li key={check}>{check}</li>)}</ul></article><article><b>Actual outcome</b><p>{selectedDetail.explanation.outcome}</p><small>Average response time: {(selectedDetail.explanation.averageLatencyMs / 1000).toFixed(1)} seconds</small></article></div>{selectedDetail.findings.length ? <div className="admin-live-findings">{selectedDetail.findings.map((finding, index) => <article className={finding.severity === "warning" ? "admin-result fail" : "admin-result"} key={`${finding.type}-${index}`}><div><AlertTriangle size={16}/><b>{finding.type.replace(/_/g, " ")}</b></div><span>Why flagged: {finding.evidence}</span><small>Recommended fix: {finding.recommendation}</small></article>)}</div> : <p className="admin-analysis-clear"><CheckCircle2 size={16}/>No automated issue was detected in this thread.</p>}<h3>Thread transcript</h3><div className="admin-conversation-transcript">{selectedDetail.conversations.map((turn) => <article key={turn._id}><small>{turn.channel} | {new Date(turn.createdAt).toLocaleString()}{typeof turn.latencyMs === "number" ? ` | ${(turn.latencyMs / 1000).toFixed(1)}s` : ""}</small><b>Patient: {turn.userMessage}</b><span>Assistant: {turn.assistantReply}</span></article>)}</div><p className="muted">{selectedDetail.explanation.boundary}</p></>}</section>}
+      <section className="panel"><h2>Previous assistant chats</h2><p className="muted">Click a chat to open the complete thread, detected issue, why it was flagged, recommended fix, and actual appointment-tool outcome.</p>{conversations.length ? <div className="admin-conversations">{conversations.map((item) => <button type="button" className={selectedThread === item.threadId ? "admin-conversation-button selected" : "admin-conversation-button"} key={item._id} onClick={() => void openConversation(item)}><small>{item.channel} | {new Date(item.createdAt).toLocaleString()}</small><b>Patient: {item.userMessage}</b><span>Assistant: {item.assistantReply}</span><em>Open explanation <ChevronRight size={14}/></em></button>)}</div> : <p className="muted">No assistant conversations have been recorded yet.</p>}</section>
+      {selectedThread && <section className="panel admin-conversation-detail" ref={detailRef}><div className="admin-section-heading"><div><ShieldCheck size={18}/><h2>Conversation explanation</h2></div><span>Thread: {selectedThread}</span></div>{detailNotice && <p className="admin-detail-notice">{detailNotice}</p>}{loadingDetail && <p className="muted">Loading complete server evidence...</p>}{selectedDetail && <><p className="muted">{selectedDetail.explanation.summary}</p><div className="admin-detail-grid"><article><b>What was checked</b><ul>{selectedDetail.explanation.checks.map((check) => <li key={check}>{check}</li>)}</ul></article><article><b>Actual outcome</b><p>{selectedDetail.explanation.outcome}</p><small>Average response time: {(selectedDetail.explanation.averageLatencyMs / 1000).toFixed(1)} seconds</small></article></div>{selectedDetail.findings.length ? <div className="admin-live-findings">{selectedDetail.findings.map((finding, index) => <article className={finding.severity === "warning" ? "admin-result fail" : "admin-result"} key={`${finding.type}-${index}`}><div><AlertTriangle size={16}/><b>{finding.type.replace(/_/g, " ")}</b></div><span>Why flagged: {finding.evidence}</span><small>Recommended fix: {finding.recommendation}</small></article>)}</div> : <p className="admin-analysis-clear"><CheckCircle2 size={16}/>No automated issue was detected in this thread.</p>}{selectedDetail.explanation.changesApplied?.length ? <><h3>Changes applied for this issue</h3><div className="admin-change-list">{selectedDetail.explanation.changesApplied.map((change) => <p key={change}>{change}</p>)}</div></> : null}<h3>Thread transcript</h3><div className="admin-conversation-transcript">{selectedDetail.conversations.map((turn) => <article key={turn._id}><small>{turn.channel} | {new Date(turn.createdAt).toLocaleString()}{typeof turn.latencyMs === "number" ? ` | ${(turn.latencyMs / 1000).toFixed(1)}s` : ""}</small><b>Patient: {turn.userMessage}</b><span>Assistant: {turn.assistantReply}</span></article>)}</div><p className="muted">{selectedDetail.explanation.boundary}</p></>}</section>}
       <p className="muted">{report.limitation}</p>
     </>}
   </section>;

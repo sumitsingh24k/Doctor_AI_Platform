@@ -10,7 +10,7 @@ export type ConversationAuditRecord = {
 export type LiveConversationFinding = {
   threadId: string;
   severity: "warning" | "review";
-  type: "premature_booking_claim" | "confirmation_loop" | "privacy_risk" | "slow_response";
+  type: "premature_booking_claim" | "confirmation_loop" | "privacy_risk" | "slow_response" | "reply_generation_failure";
   evidence: string;
   recommendation: string;
   createdAt: Date;
@@ -21,6 +21,7 @@ const confirmation = (value: string) => /^(yes|yes,? confirm|confirm|haan|ha|ji 
 const bookingClaim = (value: string) => /\b(appointment|booking)\b.{0,45}\b(booked|confirmed|set)\b|\b(booked|confirmed)\b.{0,45}\bappointment\b/i.test(value);
 const asksConfirmation = (value: string) => /\b(yes,? confirm|confirm (?:the|this|your)|reply exactly)\b/i.test(value);
 const privacyRisk = (value: string) => /\b(all patient records|other patients?|patient records)\b/i.test(value) && !/can(?:not|'t)|cannot|unable|won't|will not/i.test(value);
+const recoveryReply = (value: string) => /(?:couldn't|could not) prepare a reply|unable to get an assistant response|couldn't reach the assistant/i.test(value);
 
 // Heuristics intentionally analyse only stored conversation content; they do
 // not pretend that text proves tool/database state. The admin UI states that
@@ -54,6 +55,11 @@ export const analyseAssistantConversations = (records: ConversationAuditRecord[]
         threadId, severity: "warning", type: "privacy_risk", createdAt: turn.createdAt,
         evidence: `Potential patient-data disclosure: “${turn.assistantReply.slice(0, 180)}”`,
         recommendation: "Review immediately; patient records must never be disclosed across users.",
+      });
+      if (recoveryReply(turn.assistantReply)) findings.push({
+        threadId, severity: "warning", type: "reply_generation_failure", createdAt: turn.createdAt,
+        evidence: `The assistant returned its recovery message instead of an answer: “${turn.assistantReply.slice(0, 180)}”`,
+        recommendation: "Review provider/API error logs and configured fallback model for this turn. The patient should retry only after the service is healthy.",
       });
       if ((turn.latencyMs ?? 0) > 8_000) findings.push({
         threadId, severity: "review", type: "slow_response", createdAt: turn.createdAt,

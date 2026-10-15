@@ -58,6 +58,14 @@ export const getAssistantConversationDetail = async (req: Request, res: Response
   const summary = findings.length
     ? `${findings.length} automated review signal${findings.length === 1 ? "" : "s"} found in this thread. Open each finding below for the evidence and recommended follow-up.`
     : "No automated review signal was found in this thread. This means the configured checks did not detect a known risk; it is not a clinical or quality guarantee.";
+  const changesApplied = [...new Set(findings.map((finding) => {
+    if (finding.type === "premature_booking_claim") return "Booking guardrail: a booking is held until complete details and explicit confirmation are present; success is only stated after the action tool succeeds.";
+    if (finding.type === "confirmation_loop") return "Voice confirmation handling: punctuation is normalized and the latest conversation thread is retained so a spoken confirmation continues the pending booking.";
+    if (finding.type === "slow_response") return "Performance path: verified clinic facts and simple availability requests use fast paths; provider/tool timings still need review for this specific slow turn.";
+    if (finding.type === "reply_generation_failure") return "Reliability protection: the patient receives a safe recovery message instead of a blank reply, and this failure is now visible to admins for provider/fallback investigation.";
+    if (finding.type === "privacy_risk") return "Privacy guardrail: cross-patient record requests are blocked and must be reviewed before any policy change.";
+    return "No automated change mapping is available for this finding.";
+  }))];
 
   return res.json({
     threadId,
@@ -71,6 +79,7 @@ export const getAssistantConversationDetail = async (req: Request, res: Response
         "Booking-success claims compared with actual action audits",
         "Cross-patient privacy-risk wording",
         "Slow responses over 8 seconds",
+        "Fallback/recovery replies that indicate assistant generation failed",
       ],
       outcome: succeeded.length
         ? `${succeeded.length} completed action${succeeded.length === 1 ? "" : "s"} recorded in the appointment tool/database.`
@@ -78,6 +87,7 @@ export const getAssistantConversationDetail = async (req: Request, res: Response
           ? `${failed.length} action failure${failed.length === 1 ? "" : "s"} recorded; no succeeded action is present in this thread.`
           : "No appointment action was requested or recorded for this thread.",
       averageLatencyMs: Math.round(averageLatency),
+      changesApplied,
       boundary: "Transcript analysis identifies language patterns only. Appointment creation, cancellation, and rescheduling are verified from the separate tool/database audit shown here.",
     },
   });
